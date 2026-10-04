@@ -1,0 +1,32 @@
+{
+  "name": "robotcourse",
+  "version": "1.0.0",
+  "description": "A 3D genetic-algorithm obstacle course for humanoid robots under gravity.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Davidhanson90/robotcourse.git"
+  },
+  "homepage": "https://davidhanson90.github.io/robotcourse/",
+  "author": "David Graville",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "0.21.0",
+    "lit": "3.3.3",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "0.186.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.2"
+  }
+}
