@@ -90,6 +90,14 @@ interface Robot {
   upY: number;
   jumpCycle: number;
   jumpWindow: number;
+  footL: RAPIER.Collider;
+  footR: RAPIER.Collider;
+  /** At least one foot collider has a contact with a solid. */
+  grounded: boolean;
+  /** True after a jump until the robot has left the ground and a foot lands again. */
+  jumpSpent: boolean;
+  /** Seen airborne since the last landing, so a spent jump can reset. */
+  leftGround: boolean;
 }
 
 let ready: Promise<void> | null = null;
@@ -308,9 +316,9 @@ export class CourseSim {
       body: RAPIER.RigidBody,
       desc: RAPIER.ColliderDesc,
       friction: number
-    ): void => {
+    ): RAPIER.Collider => {
       desc.setFriction(friction).setRestitution(0).setCollisionGroups(ROBOT_GROUP);
-      this.world.createCollider(desc, body);
+      return this.world.createCollider(desc, body);
     };
 
     collide(
@@ -354,8 +362,8 @@ export class CourseSim {
         .setDensity(densityFor(cuboidVolume(FOOT.hx, FOOT.hy, FOOT.hz), 1.6))
         .setFriction(1.5)
         .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max);
-    collide(footL, footDesc(), 1.55);
-    collide(footR, footDesc(), 1.55);
+    const footColL = collide(footL, footDesc(), 1.55);
+    const footColR = collide(footR, footDesc(), 1.55);
 
     const hinges: Hinge[] = [];
     const hinge = (
@@ -513,7 +521,12 @@ export class CourseSim {
       lastX: spawnX,
       upY: 1,
       jumpCycle: 0,
-      jumpWindow: 0
+      jumpWindow: 0,
+      footL: footColL,
+      footR: footColR,
+      grounded: false,
+      jumpSpent: false,
+      leftGround: false
     };
   }
 
@@ -543,6 +556,29 @@ export class CourseSim {
     }
   }
 
+  /** True when this foot collider has at least one contact point with a solid. */
+  private footOnSolid(foot: RAPIER.Collider): boolean {
+    let touching = false;
+    this.world.contactPairsWith(foot, (other) => {
+      if (touching) return;
+      this.world.contactPair(foot, other, (manifold) => {
+        if (manifold.numContacts() > 0) touching = true;
+      });
+    });
+    return touching;
+  }
+
+  /** Grounded flag from the contact pairs of the last physics step. */
+  private updateGrounded(robot: Robot): void {
+    const grounded = this.footOnSolid(robot.footL) || this.footOnSolid(robot.footR);
+    if (!grounded) robot.leftGround = true;
+    else if (robot.leftGround) {
+      robot.jumpSpent = false;
+      robot.leftGround = false;
+    }
+    robot.grounded = grounded;
+  }
+
   private applyJump(robot: Robot): void {
     const amp = robot.state.morph.jump;
     if (amp <= 0.02 || robot.state.fallen || robot.state.hidden) {
@@ -551,8 +587,10 @@ export class CourseSim {
     }
     const freq = Math.max(0.2, robot.decoded.freq ?? 1.4);
     const cycle = Math.floor(this.time * freq);
-    if (this.time > 0.2 && cycle !== robot.jumpCycle) {
+    // Impulse only with a foot on a solid, and only once until they leave and land.
+    if (this.time > 0.2 && cycle !== robot.jumpCycle && robot.grounded && !robot.jumpSpent) {
       robot.jumpCycle = cycle;
+      robot.jumpSpent = true;
       robot.jumpWindow = 0.1;
       const vy = amp * 3.4;
       const vx = amp * 0.45;
@@ -562,19 +600,24 @@ export class CourseSim {
       }
     }
     if (robot.jumpWindow > 0) {
-      const burst = amp * (robot.jumpWindow / 0.1);
-      const knee = robot.state.morph.limits.knee;
-      const hip = robot.state.morph.limits.hip;
-      robot.pose.kneeL = Math.max(knee[0], robot.pose.kneeL - burst);
-      robot.pose.kneeR = Math.max(knee[0], robot.pose.kneeR - burst);
-      robot.pose.hipL = Math.max(hip[0], robot.pose.hipL - burst * 0.7);
-      robot.pose.hipR = Math.max(hip[0], robot.pose.hipR - burst * 0.7);
-      robot.jumpWindow -= SIM_DT;
+      if (!robot.grounded) {
+        robot.jumpWindow = 0;
+      } else {
+        const burst = amp * (robot.jumpWindow / 0.1);
+        const knee = robot.state.morph.limits.knee;
+        const hip = robot.state.morph.limits.hip;
+        robot.pose.kneeL = Math.max(knee[0], robot.pose.kneeL - burst);
+        robot.pose.kneeR = Math.max(knee[0], robot.pose.kneeR - burst);
+        robot.pose.hipL = Math.max(hip[0], robot.pose.hipL - burst * 0.7);
+        robot.pose.hipR = Math.max(hip[0], robot.pose.hipR - burst * 0.7);
+        robot.jumpWindow -= SIM_DT;
+      }
     }
   }
 
   private collect(): void {
     for (const robot of this.internals) {
+      this.updateGrounded(robot);
       this.copyBodies(robot);
       if (robot.state.hidden) continue;
       const pelvis = robot.state.bodies.pelvis;
