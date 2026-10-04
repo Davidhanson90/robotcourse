@@ -83,3 +83,98 @@ export interface Pose {
   elbowL: number;
   elbowR: number;
 }
+
+export interface Morph {
+  thigh: number;
+  shin: number;
+  upperArm: number;
+  forearm: number;
+  pelvis: { hx: number; hy: number; hz: number };
+  chest: { hx: number; hy: number; hz: number };
+  headR: number;
+  hipZ: number;
+  hipDrop: number;
+  shoulderY: number;
+  shoulderZ: number;
+  limits: {
+    spine: readonly [number, number];
+    hip: readonly [number, number];
+    knee: readonly [number, number];
+    ankle: readonly [number, number];
+    shoulder: readonly [number, number];
+    elbow: readonly [number, number];
+  };
+  /** Upward jump strength. Zero means this robot cannot jump on purpose. */
+  jump: number;
+  /** 0 stands tall. 1 folds into a crouch that can crawl. */
+  crouch: number;
+  /** Pelvis center height with straight legs and the sole just off the ground. */
+  pelvisStand: number;
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** Piecewise lerp that passes through `mid` at `tMid`, so the prototype limits stay put. */
+function through(stiff: number, mid: number, loose: number, t: number, tMid: number): number {
+  const u = Math.max(0, Math.min(1, t));
+  if (u <= tMid) return lerp(stiff, mid, u / Math.max(tMid, 1e-6));
+  return lerp(mid, loose, (u - tMid) / (1 - tMid));
+}
+
+/** Rigid-body sizes, joint anchors, and joint limits for one genome. */
+export function buildMorph(params: {
+  leg: number;
+  torsoH: number;
+  torsoW: number;
+  arm: number;
+  hipFlex: number;
+  kneeFlex: number;
+  jump: number;
+}): Morph {
+  const hipFlex = Math.max(0, Math.min(1, params.hipFlex));
+  const kneeFlex = Math.max(0, Math.min(1, params.kneeFlex));
+  const thigh = THIGH * params.leg;
+  const shin = SHIN * params.leg;
+  const pelvis = {
+    hx: PELVIS.hx * params.torsoW,
+    hy: PELVIS.hy * params.torsoH,
+    hz: PELVIS.hz * params.torsoW
+  };
+  const chest = {
+    hx: CHEST.hx * params.torsoW,
+    hy: CHEST.hy * params.torsoH,
+    hz: CHEST.hz * params.torsoW
+  };
+  const hipDrop = HIP_DROP * params.torsoH;
+  const kneeCrouch = Math.max(0, Math.min(1, (kneeFlex - 0.62) / 0.38));
+  const hipFold = Math.max(0, Math.min(1, (hipFlex - 0.4) / 0.6));
+  return {
+    thigh,
+    shin,
+    upperArm: UPPER_ARM * params.arm,
+    forearm: FOREARM * params.arm,
+    pelvis,
+    chest,
+    headR: HEAD_R * (0.82 + 0.18 * params.torsoH),
+    hipZ: HIP_Z * params.torsoW,
+    hipDrop,
+    shoulderY: SHOULDER_Y * params.torsoH,
+    shoulderZ: SHOULDER_Z * params.torsoW,
+    limits: {
+      spine: LIMIT.spine,
+      hip: [through(-0.28, LIMIT.hip[0], -1.55, hipFlex, 0.55), through(0.4, LIMIT.hip[1], 2.05, hipFlex, 0.55)],
+      knee: [0, through(0.28, LIMIT.knee[1], 2.55, kneeFlex, 0.42)],
+      ankle: [
+        through(-0.4, LIMIT.ankle[0], -1.15, kneeFlex, 0.42),
+        through(0.45, LIMIT.ankle[1], 1.25, kneeFlex, 0.42)
+      ],
+      shoulder: LIMIT.shoulder,
+      elbow: LIMIT.elbow
+    },
+    jump: Math.max(0, params.jump),
+    crouch: kneeCrouch * (0.35 + 0.65 * hipFold),
+    pelvisStand: LIFT + FOOT.hy * 2 + shin + thigh + hipDrop
+  };
+}

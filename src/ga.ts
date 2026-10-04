@@ -1,4 +1,4 @@
-import { LIMIT, type Pose } from "./body";
+import { buildMorph, LIMIT, type Morph, type Pose } from "./body";
 import { GEN_TIME } from "./course";
 
 /**
@@ -51,8 +51,18 @@ export const GENES: readonly GeneSpec[] = [
   { name: "lean", min: -0.12, max: 0.4 },
   { name: "turn", min: -0.2, max: 0.2 },
   { name: "toe", min: -0.22, max: 0.32 },
-  { name: "split", min: 0, max: 1 }
+  { name: "split", min: 0, max: 1 },
+  { name: "leg", min: 0.62, max: 1.38 },
+  { name: "torsoH", min: 0.68, max: 1.32 },
+  { name: "torsoW", min: 0.7, max: 1.3 },
+  { name: "arm", min: 0.6, max: 1.4 },
+  { name: "hipFlex", min: 0, max: 1 },
+  { name: "kneeFlex", min: 0, max: 1 },
+  // Negative is no jump. Only a positive amplitude can leave the ground on purpose.
+  { name: "jump", min: -1, max: 1 }
 ];
+
+const SHAPE_GENES = new Set(["leg", "torsoH", "torsoW", "arm", "hipFlex", "kneeFlex", "jump"]);
 
 export type Decoded = Record<string, number>;
 
@@ -75,7 +85,14 @@ export const PROTO: Decoded = {
   lean: 0.06,
   turn: 0,
   toe: 0.12,
-  split: 1
+  split: 1,
+  leg: 1,
+  torsoH: 1,
+  torsoW: 1,
+  arm: 1,
+  hipFlex: 0.55,
+  kneeFlex: 0.42,
+  jump: 0
 };
 
 export type Rng = () => number;
@@ -106,14 +123,29 @@ export function clamp01(v: number): number {
 }
 
 export function decode(genes: readonly number[]): Decoded {
+  const proto = encode(PROTO);
   const out: Decoded = {};
   for (let i = 0; i < GENES.length; i++) {
     const spec = GENES[i];
     if (!spec) continue;
-    const u = clamp01(genes[i] ?? 0);
+    const raw = genes[i];
+    const u = clamp01(raw === undefined ? (proto[i] ?? 0.5) : raw);
     out[spec.name] = spec.min + u * (spec.max - spec.min);
   }
   return out;
+}
+
+/** Sizes and joint limits implied by a decoded genome. Missing shape genes use PROTO. */
+export function morphFromDecoded(decoded: Decoded): Morph {
+  return buildMorph({
+    leg: decoded.leg ?? PROTO.leg ?? 1,
+    torsoH: decoded.torsoH ?? PROTO.torsoH ?? 1,
+    torsoW: decoded.torsoW ?? PROTO.torsoW ?? 1,
+    arm: decoded.arm ?? PROTO.arm ?? 1,
+    hipFlex: decoded.hipFlex ?? PROTO.hipFlex ?? 0.55,
+    kneeFlex: decoded.kneeFlex ?? PROTO.kneeFlex ?? 0.42,
+    jump: decoded.jump ?? 0
+  });
 }
 
 export function encode(decoded: Decoded): number[] {
@@ -131,12 +163,25 @@ function jitter(genes: readonly number[], rng: Rng, sigma: number): number[] {
   return genes.map((g) => clamp01(g + gauss(rng) * sigma));
 }
 
+/** Spread shape, flexibility, and jump so a generation is not one shared body. */
+function diversifyShape(genes: readonly number[], rng: Rng): number[] {
+  return genes.map((gene, i) => {
+    const name = GENES[i]?.name;
+    if (!name || !SHAPE_GENES.has(name)) return gene;
+    if (name === "jump") {
+      // Most stay grounded. The rest get a real upward amplitude.
+      return rng() < 0.62 ? clamp01(0.5 + gauss(rng) * 0.04) : clamp01(0.5 + 0.5 * rng());
+    }
+    return rng();
+  });
+}
+
 export function initialPopulation(pop: number, rng: Rng): number[][] {
   const proto = encode(PROTO);
   const out: number[][] = [];
   for (let i = 0; i < pop; i++) {
     if (i < 3) out.push(jitter(proto, rng, 0.02));
-    else if (i < Math.floor(pop * 0.75)) out.push(jitter(proto, rng, 0.07));
+    else if (i < Math.floor(pop * 0.75)) out.push(diversifyShape(jitter(proto, rng, 0.07), rng));
     else out.push(randomGenome(rng));
   }
   return out;
@@ -168,7 +213,11 @@ function mutate(genes: readonly number[], rng: Rng): number[] {
   });
 }
 
-/** `parents` must already be sorted best-first. Returns a new population of genomes. */
+/**
+ * `parents` must already be sorted best-first. Returns a new population of genomes.
+ * Elites are copied in full, including leg, torso, arm, joint-range, and jump genes.
+ * Children mix those genes by crossover and mutation. Nothing is reset to a default body.
+ */
 export function breed(parents: readonly number[][], pop: number, rng: Rng): number[][] {
   if (parents.length === 0) return initialPopulation(pop, rng);
   const eliteN = Math.max(2, Math.round(pop * 0.125));
@@ -208,7 +257,13 @@ function legStep(
   };
 }
 
-export function writePose(decoded: Decoded, time: number, out: Pose): void {
+export function writePose(
+  decoded: Decoded,
+  time: number,
+  out: Pose,
+  limits: Morph["limits"] = LIMIT,
+  crouch = 0
+): void {
   const freq = Math.max(0.2, decoded.freq ?? 1.4);
   const split = decoded.split ?? 1;
   const cycle = time * freq;
@@ -220,19 +275,36 @@ export function writePose(decoded: Decoded, time: number, out: Pose): void {
   const armAmp = decoded.armAmp ?? 0.3;
   const elbow = decoded.elbow ?? 0.7;
   const toe = decoded.toe ?? 0;
-  const left = legStep(cycle, hipAmp, hipBias, kneeAmp, stance);
-  const right = legStep(cycle + 0.5 * split, hipAmp, hipBias, kneeAmp, stance);
+  const fold = Math.max(0, Math.min(1, crouch));
+  const left = legStep(
+    cycle,
+    hipAmp * (1 - 0.82 * fold),
+    hipBias * (1 - 0.75 * fold),
+    kneeAmp * (1 - fold),
+    stance
+  );
+  const right = legStep(
+    cycle + 0.5 * split,
+    hipAmp * (1 - 0.82 * fold),
+    hipBias * (1 - 0.75 * fold),
+    kneeAmp * (1 - fold),
+    stance
+  );
   const armPhase = cycle * Math.PI * 2;
+  const ramp = Math.min(1, time / 1.4);
+  const kneeCrouch = fold * 1.05 * ramp;
+  const hipCrouch = fold * 0.32 * ramp;
+  const creep = 0;
 
-  out.spine = clamp(decoded.lean ?? 0, LIMIT.spine[0], LIMIT.spine[1]);
-  out.hipL = clamp(left.hip + turn, LIMIT.hip[0], LIMIT.hip[1]);
-  out.hipR = clamp(right.hip - turn, LIMIT.hip[0], LIMIT.hip[1]);
-  out.kneeL = clamp(left.knee, LIMIT.knee[0], LIMIT.knee[1]);
-  out.kneeR = clamp(right.knee, LIMIT.knee[0], LIMIT.knee[1]);
-  out.ankleL = clamp(toe * Math.sin(armPhase), LIMIT.ankle[0], LIMIT.ankle[1]);
-  out.ankleR = clamp(toe * Math.sin(armPhase + Math.PI * split), LIMIT.ankle[0], LIMIT.ankle[1]);
-  out.shoulderL = clamp(-armAmp * Math.sin(armPhase), LIMIT.shoulder[0], LIMIT.shoulder[1]);
-  out.shoulderR = clamp(-armAmp * Math.sin(armPhase + Math.PI * split), LIMIT.shoulder[0], LIMIT.shoulder[1]);
-  out.elbowL = clamp(elbow, LIMIT.elbow[0], LIMIT.elbow[1]);
-  out.elbowR = clamp(elbow, LIMIT.elbow[0], LIMIT.elbow[1]);
+  out.spine = clamp((decoded.lean ?? 0) * (1 - 0.5 * fold) + fold * 0.05 * ramp, limits.spine[0], limits.spine[1]);
+  out.hipL = clamp(left.hip + turn + hipCrouch, limits.hip[0], limits.hip[1]);
+  out.hipR = clamp(right.hip - turn + hipCrouch, limits.hip[0], limits.hip[1]);
+  out.kneeL = clamp(left.knee + kneeCrouch + creep, limits.knee[0], limits.knee[1]);
+  out.kneeR = clamp(right.knee + kneeCrouch - creep, limits.knee[0], limits.knee[1]);
+  out.ankleL = clamp(toe * Math.sin(armPhase), limits.ankle[0], limits.ankle[1]);
+  out.ankleR = clamp(toe * Math.sin(armPhase + Math.PI * split), limits.ankle[0], limits.ankle[1]);
+  out.shoulderL = clamp(-armAmp * Math.sin(armPhase), limits.shoulder[0], limits.shoulder[1]);
+  out.shoulderR = clamp(-armAmp * Math.sin(armPhase + Math.PI * split), limits.shoulder[0], limits.shoulder[1]);
+  out.elbowL = clamp(elbow, limits.elbow[0], limits.elbow[1]);
+  out.elbowR = clamp(elbow, limits.elbow[0], limits.elbow[1]);
 }

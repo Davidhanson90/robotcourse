@@ -2,23 +2,13 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
   ARM_R,
-  CHEST,
   FORE_R,
-  FOREARM,
   FOOT,
-  HEAD_R,
-  HIP_DROP,
-  HIP_Z,
   LIMB_R,
-  PELVIS,
-  SHIN,
   SHIN_R,
-  SHOULDER_Y,
-  SHOULDER_Z,
-  THIGH,
-  UPPER_ARM,
   capsuleHalf,
-  type BodyKey
+  type BodyKey,
+  type Morph
 } from "./body";
 import { FINISH_X, LANE_HALF, SOLIDS, VALLEY_TOP, surfaceY } from "./course";
 import type { CourseSim } from "./sim";
@@ -131,7 +121,7 @@ export class CourseView {
   }
 
   sync(sim: CourseSim): void {
-    if (this.builtFor !== sim.pop) this.rebuildRobots(sim);
+    if (this.builtFor !== sim.spawnSerial) this.rebuildRobots(sim);
     if (this.generation !== sim.generation) {
       this.stashTrail();
       this.generation = sim.generation;
@@ -197,14 +187,14 @@ export class CourseView {
       }
     }
     this.robots.clear();
-    for (const robot of sim.robots) this.robots.set(robot.index, this.makeRobot(robot.hue));
-    this.builtFor = sim.pop;
+    for (const robot of sim.robots) this.robots.set(robot.index, this.makeRobot(robot.hue, robot.morph));
+    this.builtFor = sim.spawnSerial;
     this.generation = -1;
     this.trailCount = 0;
     this.ghostCount = 0;
   }
 
-  private makeRobot(hue: number): RobotVisual {
+  private makeRobot(hue: number, morph: Morph): RobotVisual {
     const armor = new THREE.MeshStandardMaterial({
       color: new THREE.Color().setHSL(hue, 0.62, 0.48),
       roughness: 0.42,
@@ -247,60 +237,65 @@ export class CourseView {
     };
 
     const pelvis = new THREE.Group();
-    pelvis.add(this.mesh(this.box(PELVIS.hx * 2, PELVIS.hy * 2, PELVIS.hz * 2), dark, true));
-    const belt = this.mesh(this.geo("belt", () => new THREE.TorusGeometry(0.155, 0.018, 8, 18)), accent, false);
+    pelvis.add(this.mesh(this.box(morph.pelvis.hx * 2, morph.pelvis.hy * 2, morph.pelvis.hz * 2), dark, true));
+    const beltR = Math.min(morph.pelvis.hx, morph.pelvis.hz) * 0.86;
+    const belt = this.mesh(
+      this.geo(`belt-${beltR.toFixed(3)}`, () => new THREE.TorusGeometry(beltR, 0.018, 8, 18)),
+      accent,
+      false
+    );
     belt.rotation.x = Math.PI / 2;
     pelvis.add(belt);
     for (const side of [-1, 1]) {
       const ball = this.mesh(this.geo("hip", () => new THREE.SphereGeometry(0.07, 14, 12)), joint, true);
-      ball.position.set(0.02, -HIP_DROP, side * HIP_Z);
+      ball.position.set(0.02, -morph.hipDrop, side * morph.hipZ);
       pelvis.add(ball);
     }
     add("pelvis", pelvis);
 
     const chest = new THREE.Group();
-    chest.add(this.mesh(this.box(CHEST.hx * 2, CHEST.hy * 2, CHEST.hz * 2), armor, true));
-    const plate = this.mesh(this.box(0.22, 0.26, 0.04), accent, true);
-    plate.position.set(CHEST.hx + 0.01, 0.02, 0);
+    chest.add(this.mesh(this.box(morph.chest.hx * 2, morph.chest.hy * 2, morph.chest.hz * 2), armor, true));
+    const plate = this.mesh(this.box(morph.chest.hx * 0.7, morph.chest.hy * 0.85, 0.04), accent, true);
+    plate.position.set(morph.chest.hx + 0.01, 0.02, 0);
     chest.add(plate);
-    const pack = this.mesh(this.box(0.08, 0.22, 0.16), dark, true);
-    pack.position.set(-CHEST.hx - 0.03, 0.04, 0);
+    const pack = this.mesh(this.box(0.08, morph.chest.hy * 0.7, morph.chest.hz * 0.7), dark, true);
+    pack.position.set(-morph.chest.hx - 0.03, 0.04, 0);
     chest.add(pack);
     const head = new THREE.Group();
-    head.position.set(0, CHEST.hy + HEAD_R * 0.58, 0);
-    head.add(this.mesh(this.geo("head", () => new THREE.SphereGeometry(HEAD_R, 28, 18)), armor, true));
-    const visorMesh = this.mesh(this.box(0.06, 0.07, 0.2), visor, false);
-    visorMesh.position.set(HEAD_R * 0.78, 0.02, 0);
+    head.position.set(0, morph.chest.hy + morph.headR * 0.55, 0);
+    head.add(this.mesh(this.geo(`head-${morph.headR.toFixed(3)}`, () => new THREE.SphereGeometry(morph.headR, 28, 18)), armor, true));
+    const visorMesh = this.mesh(this.box(0.06, 0.07, morph.headR * 1.15), visor, false);
+    visorMesh.position.set(morph.headR * 0.78, 0.02, 0);
     head.add(visorMesh);
     for (const side of [-1, 1]) {
       const eye = this.mesh(this.geo("eye", () => new THREE.SphereGeometry(0.028, 10, 8)), visor, false);
-      eye.position.set(HEAD_R * 0.72, 0.035, side * 0.055);
+      eye.position.set(morph.headR * 0.72, 0.035, side * 0.055);
       head.add(eye);
       const ear = this.mesh(this.geo("ear", () => new THREE.CylinderGeometry(0.012, 0.012, 0.14, 8)), dark, false);
-      ear.position.set(0, HEAD_R * 0.85, side * 0.08);
+      ear.position.set(0, morph.headR * 0.85, side * 0.08);
       head.add(ear);
     }
     const neck = this.mesh(this.geo("neck", () => new THREE.CylinderGeometry(0.05, 0.06, 0.08, 12)), dark, true);
-    neck.position.set(0, -HEAD_R * 0.72, 0);
+    neck.position.set(0, -morph.headR * 0.72, 0);
     head.add(neck);
     chest.add(head);
     for (const side of [-1, 1]) {
       const ball = this.mesh(this.geo("shoulder", () => new THREE.SphereGeometry(0.065, 14, 12)), joint, true);
-      ball.position.set(0, SHOULDER_Y, side * SHOULDER_Z);
+      ball.position.set(0, morph.shoulderY, side * morph.shoulderZ);
       chest.add(ball);
     }
     add("chest", chest);
 
-    add("thighL", this.limb(THIGH, LIMB_R, armor, joint, true));
-    add("thighR", this.limb(THIGH, LIMB_R, armor, joint, true));
-    add("shinL", this.limb(SHIN, SHIN_R, dark, joint, true));
-    add("shinR", this.limb(SHIN, SHIN_R, dark, joint, true));
+    add("thighL", this.limb(morph.thigh, LIMB_R, armor, joint, true));
+    add("thighR", this.limb(morph.thigh, LIMB_R, armor, joint, true));
+    add("shinL", this.limb(morph.shin, SHIN_R, dark, joint, true));
+    add("shinR", this.limb(morph.shin, SHIN_R, dark, joint, true));
     add("footL", this.footMesh(sole, accent));
     add("footR", this.footMesh(sole, accent));
-    add("armL", this.limb(UPPER_ARM, ARM_R, armor, joint, false));
-    add("armR", this.limb(UPPER_ARM, ARM_R, armor, joint, false));
-    add("foreL", this.limb(FOREARM, FORE_R, dark, joint, false, true));
-    add("foreR", this.limb(FOREARM, FORE_R, dark, joint, false, true));
+    add("armL", this.limb(morph.upperArm, ARM_R, armor, joint, false));
+    add("armR", this.limb(morph.upperArm, ARM_R, armor, joint, false));
+    add("foreL", this.limb(morph.forearm, FORE_R, dark, joint, false, true));
+    add("foreR", this.limb(morph.forearm, FORE_R, dark, joint, false, true));
 
     return { parts, visor, accent };
   }

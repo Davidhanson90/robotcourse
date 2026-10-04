@@ -263,7 +263,7 @@ export class RobotCourse extends LitElement {
           <header class="panel">
             <div class="brand">
               <h1><span class="mark" style="--swatch:${swatch}"></span>ROBOT COURSE</h1>
-              <p>Same humanoid, different gait. Gravity is on. Distance first, then a finish bonus, then time.</p>
+              <p>Shape, joint range, and jump are genes. Tall, crouched, and the odd hop. Distance first, then a finish bonus, then time.</p>
             </div>
             <div class="stats">
               <div class="stat">

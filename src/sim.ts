@@ -2,29 +2,16 @@ import RAPIER from "@dimforge/rapier3d-compat";
 import {
   ARM_R,
   BODY_KEYS,
-  CHEST,
   FORE_R,
-  FOREARM,
   FOOT,
-  HEAD_R,
-  HIP_DROP,
-  HIP_Z,
   LIMB_R,
-  LIMIT,
-  LIFT,
-  PELVIS,
-  SHIN,
   SHIN_R,
-  SHOULDER_Y,
-  SHOULDER_Z,
-  THIGH,
-  UPPER_ARM,
   capsuleHalf,
   capsuleVolume,
   cuboidVolume,
   densityFor,
-  pelvisHeight,
   type BodyKey,
+  type Morph,
   type Pose
 } from "./body";
 import { FINISH_X, GEN_TIME, LANE_HALF, SOLIDS, spawnSlots } from "./course";
@@ -34,6 +21,7 @@ import {
   decode,
   fitness,
   initialPopulation,
+  morphFromDecoded,
   mulberry32,
   writePose,
   type Decoded,
@@ -76,6 +64,7 @@ export interface RobotState {
   fallen: boolean;
   hidden: boolean;
   score: number;
+  morph: Morph;
   bodies: Record<BodyKey, BodyPose>;
 }
 
@@ -99,9 +88,12 @@ interface Robot {
   motorsCut: boolean;
   lastX: number;
   upY: number;
+  jumpCycle: number;
+  jumpWindow: number;
 }
 
 let ready: Promise<void> | null = null;
+let nextSpawnSerial = 1;
 
 function initPhysics(): Promise<void> {
   if (!ready) ready = RAPIER.init();
@@ -130,8 +122,8 @@ function zPitch(body: RAPIER.RigidBody): number {
   return Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
 }
 
-function clampAnkle(angle: number): number {
-  return Math.max(LIMIT.ankle[0], Math.min(LIMIT.ankle[1], angle));
+function clampRange(angle: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, angle));
 }
 
 export class CourseSim {
@@ -146,6 +138,7 @@ export class CourseSim {
   private rng: Rng;
   private internals: Robot[] = [];
   private disposed = false;
+  spawnSerial = 0;
 
   private constructor(pop: number, seed: number, genomes: number[][] | undefined, maxSteps: number) {
     this.pop = pop;
@@ -254,6 +247,7 @@ export class CourseSim {
   }
 
   private spawnAll(genomes: number[][]): void {
+    this.spawnSerial = nextSpawnSerial++;
     const slots = spawnSlots(genomes.length);
     genomes.forEach((genes, index) => {
       const slot = slots[index] ?? { x: 0.4, z: 0 };
@@ -265,8 +259,10 @@ export class CourseSim {
   }
 
   private spawnRobot(index: number, genes: number[], spawnX: number, spawnZ: number): Robot {
-    const pelvisY = pelvisHeight(LIFT);
-    const chestY = pelvisY + PELVIS.hy + CHEST.hy;
+    const decoded = decode(genes);
+    const morph = morphFromDecoded(decoded);
+    const pelvisY = morph.pelvisStand;
+    const chestY = pelvisY + morph.pelvis.hy + morph.chest.hy;
     const make = (
       x: number,
       y: number,
@@ -285,28 +281,28 @@ export class CourseSim {
     const pelvis = make(spawnX, pelvisY, spawnZ, true);
     const chest = make(spawnX, chestY, spawnZ, false);
 
-    const hipY = pelvisY - HIP_DROP;
-    const thighY = hipY - THIGH / 2;
-    const kneeY = hipY - THIGH;
-    const shinY = kneeY - SHIN / 2;
-    const ankleY = kneeY - SHIN;
+    const hipY = pelvisY - morph.hipDrop;
+    const thighY = hipY - morph.thigh / 2;
+    const kneeY = hipY - morph.thigh;
+    const shinY = kneeY - morph.shin / 2;
+    const ankleY = kneeY - morph.shin;
     const footY = ankleY - FOOT.hy;
 
-    const thighL = make(spawnX, thighY, spawnZ - HIP_Z, false);
-    const thighR = make(spawnX, thighY, spawnZ + HIP_Z, false);
-    const shinL = make(spawnX, shinY, spawnZ - HIP_Z, true);
-    const shinR = make(spawnX, shinY, spawnZ + HIP_Z, true);
-    const footL = make(spawnX + FOOT.heel, footY, spawnZ - HIP_Z, true);
-    const footR = make(spawnX + FOOT.heel, footY, spawnZ + HIP_Z, true);
+    const thighL = make(spawnX, thighY, spawnZ - morph.hipZ, false);
+    const thighR = make(spawnX, thighY, spawnZ + morph.hipZ, false);
+    const shinL = make(spawnX, shinY, spawnZ - morph.hipZ, true);
+    const shinR = make(spawnX, shinY, spawnZ + morph.hipZ, true);
+    const footL = make(spawnX + FOOT.heel, footY, spawnZ - morph.hipZ, true);
+    const footR = make(spawnX + FOOT.heel, footY, spawnZ + morph.hipZ, true);
 
-    const shoulderY = chestY + SHOULDER_Y;
-    const armY = shoulderY - UPPER_ARM / 2;
-    const elbowY = shoulderY - UPPER_ARM;
-    const foreY = elbowY - FOREARM / 2;
-    const armL = make(spawnX, armY, spawnZ - SHOULDER_Z, false);
-    const armR = make(spawnX, armY, spawnZ + SHOULDER_Z, false);
-    const foreL = make(spawnX, foreY, spawnZ - SHOULDER_Z, false);
-    const foreR = make(spawnX, foreY, spawnZ + SHOULDER_Z, false);
+    const shoulderY = chestY + morph.shoulderY;
+    const armY = shoulderY - morph.upperArm / 2;
+    const elbowY = shoulderY - morph.upperArm;
+    const foreY = elbowY - morph.forearm / 2;
+    const armL = make(spawnX, armY, spawnZ - morph.shoulderZ, false);
+    const armR = make(spawnX, armY, spawnZ + morph.shoulderZ, false);
+    const foreL = make(spawnX, foreY, spawnZ - morph.shoulderZ, false);
+    const foreR = make(spawnX, foreY, spawnZ + morph.shoulderZ, false);
 
     const collide = (
       body: RAPIER.RigidBody,
@@ -319,23 +315,23 @@ export class CourseSim {
 
     collide(
       pelvis,
-      RAPIER.ColliderDesc.cuboid(PELVIS.hx, PELVIS.hy, PELVIS.hz).setDensity(
-        densityFor(cuboidVolume(PELVIS.hx, PELVIS.hy, PELVIS.hz), 7)
+      RAPIER.ColliderDesc.cuboid(morph.pelvis.hx, morph.pelvis.hy, morph.pelvis.hz).setDensity(
+        densityFor(cuboidVolume(morph.pelvis.hx, morph.pelvis.hy, morph.pelvis.hz), 7)
       ),
       0.45
     );
     collide(
       chest,
-      RAPIER.ColliderDesc.cuboid(CHEST.hx, CHEST.hy, CHEST.hz).setDensity(
-        densityFor(cuboidVolume(CHEST.hx, CHEST.hy, CHEST.hz), 9)
+      RAPIER.ColliderDesc.cuboid(morph.chest.hx, morph.chest.hy, morph.chest.hz).setDensity(
+        densityFor(cuboidVolume(morph.chest.hx, morph.chest.hy, morph.chest.hz), 9)
       ),
       0.4
     );
     collide(
       chest,
-      RAPIER.ColliderDesc.ball(HEAD_R)
-        .setTranslation(0, CHEST.hy + HEAD_R * 0.55, 0)
-        .setDensity(densityFor((4 / 3) * Math.PI * HEAD_R ** 3, 3.2)),
+      RAPIER.ColliderDesc.ball(morph.headR)
+        .setTranslation(0, morph.chest.hy + morph.headR * 0.55, 0)
+        .setDensity(densityFor((4 / 3) * Math.PI * morph.headR ** 3, 3.2)),
       0.35
     );
 
@@ -344,14 +340,14 @@ export class CourseSim {
         densityFor(capsuleVolume(length, radius), mass)
       ).setFriction(friction);
 
-    collide(thighL, limb(THIGH, LIMB_R, 2.8, 0.4), 0.4);
-    collide(thighR, limb(THIGH, LIMB_R, 2.8, 0.4), 0.4);
-    collide(shinL, limb(SHIN, SHIN_R, 1.8, 0.4), 0.4);
-    collide(shinR, limb(SHIN, SHIN_R, 1.8, 0.4), 0.4);
-    collide(armL, limb(UPPER_ARM, ARM_R, 1.0, 0.3), 0.3);
-    collide(armR, limb(UPPER_ARM, ARM_R, 1.0, 0.3), 0.3);
-    collide(foreL, limb(FOREARM, FORE_R, 0.7, 0.3), 0.3);
-    collide(foreR, limb(FOREARM, FORE_R, 0.7, 0.3), 0.3);
+    collide(thighL, limb(morph.thigh, LIMB_R, 2.8, 0.4), 0.4);
+    collide(thighR, limb(morph.thigh, LIMB_R, 2.8, 0.4), 0.4);
+    collide(shinL, limb(morph.shin, SHIN_R, 1.8, 0.4), 0.4);
+    collide(shinR, limb(morph.shin, SHIN_R, 1.8, 0.4), 0.4);
+    collide(armL, limb(morph.upperArm, ARM_R, 1.0, 0.3), 0.3);
+    collide(armR, limb(morph.upperArm, ARM_R, 1.0, 0.3), 0.3);
+    collide(foreL, limb(morph.forearm, FORE_R, 0.7, 0.3), 0.3);
+    collide(foreR, limb(morph.forearm, FORE_R, 0.7, 0.3), 0.3);
 
     const footDesc = (): RAPIER.ColliderDesc =>
       RAPIER.ColliderDesc.cuboid(FOOT.hx, FOOT.hy, FOOT.hz)
@@ -388,11 +384,11 @@ export class CourseSim {
     hinge(
       pelvis,
       chest,
-      { x: 0, y: PELVIS.hy, z: 0 },
-      { x: 0, y: -CHEST.hy, z: 0 },
+      { x: 0, y: morph.pelvis.hy, z: 0 },
+      { x: 0, y: -morph.chest.hy, z: 0 },
       zAxis,
-      LIMIT.spine[0],
-      LIMIT.spine[1],
+      morph.limits.spine[0],
+      morph.limits.spine[1],
       GAIN.spine,
       (pose) => pose.spine
     );
@@ -401,11 +397,11 @@ export class CourseSim {
       hinge(
         pelvis,
         thigh,
-        { x: 0, y: -HIP_DROP, z: side * HIP_Z },
-        { x: 0, y: THIGH / 2, z: 0 },
+        { x: 0, y: -morph.hipDrop, z: side * morph.hipZ },
+        { x: 0, y: morph.thigh / 2, z: 0 },
         zAxis,
-        LIMIT.hip[0],
-        LIMIT.hip[1],
+        morph.limits.hip[0],
+        morph.limits.hip[1],
         GAIN.hip,
         pick
       );
@@ -417,11 +413,11 @@ export class CourseSim {
       hinge(
         thigh,
         shin,
-        { x: 0, y: -THIGH / 2, z: 0 },
-        { x: 0, y: SHIN / 2, z: 0 },
+        { x: 0, y: -morph.thigh / 2, z: 0 },
+        { x: 0, y: morph.shin / 2, z: 0 },
         kneeAxis,
-        LIMIT.knee[0],
-        LIMIT.knee[1],
+        morph.limits.knee[0],
+        morph.limits.knee[1],
         GAIN.knee,
         pick
       );
@@ -433,11 +429,11 @@ export class CourseSim {
       hinge(
         shin,
         foot,
-        { x: 0, y: -SHIN / 2, z: 0 },
+        { x: 0, y: -morph.shin / 2, z: 0 },
         { x: -FOOT.heel, y: FOOT.hy, z: 0 },
         zAxis,
-        LIMIT.ankle[0],
-        LIMIT.ankle[1],
+        morph.limits.ankle[0],
+        morph.limits.ankle[1],
         GAIN.ankle,
         pick
       );
@@ -449,11 +445,11 @@ export class CourseSim {
       hinge(
         chest,
         arm,
-        { x: 0, y: SHOULDER_Y, z: side * SHOULDER_Z },
-        { x: 0, y: UPPER_ARM / 2, z: 0 },
+        { x: 0, y: morph.shoulderY, z: side * morph.shoulderZ },
+        { x: 0, y: morph.upperArm / 2, z: 0 },
         zAxis,
-        LIMIT.shoulder[0],
-        LIMIT.shoulder[1],
+        morph.limits.shoulder[0],
+        morph.limits.shoulder[1],
         GAIN.shoulder,
         pick
       );
@@ -465,11 +461,11 @@ export class CourseSim {
       hinge(
         arm,
         fore,
-        { x: 0, y: -UPPER_ARM / 2, z: 0 },
-        { x: 0, y: FOREARM / 2, z: 0 },
+        { x: 0, y: -morph.upperArm / 2, z: 0 },
+        { x: 0, y: morph.forearm / 2, z: 0 },
         zAxis,
-        LIMIT.elbow[0],
-        LIMIT.elbow[1],
+        morph.limits.elbow[0],
+        morph.limits.elbow[1],
         GAIN.elbow,
         pick
       );
@@ -490,11 +486,12 @@ export class CourseSim {
       fallen: false,
       hidden: false,
       score: 0,
+      morph,
       bodies: emptyPose()
     };
     return {
       state,
-      decoded: decode(genes),
+      decoded,
       pose: {
         spine: 0,
         hipL: 0,
@@ -514,7 +511,9 @@ export class CourseSim {
       fallTimer: 0,
       motorsCut: false,
       lastX: spawnX,
-      upY: 1
+      upY: 1,
+      jumpCycle: 0,
+      jumpWindow: 0
     };
   }
 
@@ -528,17 +527,49 @@ export class CourseSim {
         }
         continue;
       }
-      writePose(robot.decoded, this.time, robot.pose);
+      const limits = robot.state.morph.limits;
+      writePose(robot.decoded, this.time, robot.pose, limits, robot.state.morph.crouch);
+      this.applyJump(robot);
       const shinL = robot.rigid[3];
       const shinR = robot.rigid[6];
       if (shinL && shinR) {
-        robot.pose.ankleL = clampAnkle(zPitch(shinL) * ankleCouple + robot.pose.ankleL);
-        robot.pose.ankleR = clampAnkle(zPitch(shinR) * ankleCouple + robot.pose.ankleR);
+        robot.pose.ankleL = clampRange(zPitch(shinL) * ankleCouple + robot.pose.ankleL, limits.ankle[0], limits.ankle[1]);
+        robot.pose.ankleR = clampRange(zPitch(shinR) * ankleCouple + robot.pose.ankleR, limits.ankle[0], limits.ankle[1]);
       }
       for (const hinge of robot.hinges) {
         const target = Math.max(hinge.min, Math.min(hinge.max, hinge.pick(robot.pose)));
         hinge.joint.configureMotorPosition(target, hinge.k, hinge.d);
       }
+    }
+  }
+
+  private applyJump(robot: Robot): void {
+    const amp = robot.state.morph.jump;
+    if (amp <= 0.02 || robot.state.fallen || robot.state.hidden) {
+      robot.jumpWindow = 0;
+      return;
+    }
+    const freq = Math.max(0.2, robot.decoded.freq ?? 1.4);
+    const cycle = Math.floor(this.time * freq);
+    if (this.time > 0.2 && cycle !== robot.jumpCycle) {
+      robot.jumpCycle = cycle;
+      robot.jumpWindow = 0.1;
+      const vy = amp * 3.4;
+      const vx = amp * 0.45;
+      for (const body of robot.rigid) {
+        const mass = body.mass();
+        body.applyImpulse({ x: vx * mass, y: vy * mass, z: 0 }, true);
+      }
+    }
+    if (robot.jumpWindow > 0) {
+      const burst = amp * (robot.jumpWindow / 0.1);
+      const knee = robot.state.morph.limits.knee;
+      const hip = robot.state.morph.limits.hip;
+      robot.pose.kneeL = Math.max(knee[0], robot.pose.kneeL - burst);
+      robot.pose.kneeR = Math.max(knee[0], robot.pose.kneeR - burst);
+      robot.pose.hipL = Math.max(hip[0], robot.pose.hipL - burst * 0.7);
+      robot.pose.hipR = Math.max(hip[0], robot.pose.hipR - burst * 0.7);
+      robot.jumpWindow -= SIM_DT;
     }
   }
 
@@ -550,18 +581,23 @@ export class CourseSim {
       const upY = upYOf(robot.pelvis);
       robot.upY = upY;
       const span = Math.max(0.5, FINISH_X - robot.state.spawnX);
+      const stand = robot.state.morph.pelvisStand;
+      const crouch = robot.state.morph.crouch;
+      const yFall = stand * (0.36 - 0.16 * crouch);
+      const yScore = stand * (crouch > 0.4 ? 0.26 : 0.46);
+      const upCut = 0.38 - 0.32 * crouch;
       const offCourse =
-        Math.abs(pelvis.z) > LANE_HALF + 0.08 && pelvis.y < 0.45;
-      const tipped = upY < 0.38 || pelvis.y < 0.42 || offCourse;
+        Math.abs(pelvis.z) > LANE_HALF + 0.08 && pelvis.y < stand * 0.5;
+      const tipped = upY < upCut || pelvis.y < yFall || offCourse;
       if (!robot.state.fallen && !robot.state.finished) {
         const travel = pelvis.x - robot.state.spawnX;
         const dx = pelvis.x - robot.lastX;
-        if (dx < 0.85 && pelvis.y < 2.4 && pelvis.y > 0.45 && Math.abs(pelvis.z) < LANE_HALF + 0.15) {
+        if (dx < 0.85 && pelvis.y < 2.6 && pelvis.y > yScore && Math.abs(pelvis.z) < LANE_HALF + 0.15) {
           if (travel > robot.state.maxTravel) robot.state.maxTravel = Math.min(span, travel);
         }
         if (
           pelvis.x >= FINISH_X &&
-          pelvis.y > 0.55 &&
+          pelvis.y > stand * 0.56 &&
           upY > 0.55 &&
           Math.abs(pelvis.z) < LANE_HALF - 0.15
         ) {
