@@ -1,4 +1,4 @@
-import { buildMorph, LIMIT, type Morph, type Pose } from "./body";
+import { buildMorph, crawlBlend, LIMIT, type Morph, type Pose } from "./body";
 import { GEN_TIME } from "./course";
 
 /**
@@ -40,7 +40,7 @@ export interface GeneSpec {
 }
 
 export const GENES: readonly GeneSpec[] = [
-  { name: "freq", min: 0.7, max: 2.7 },
+  { name: "freq", min: 3.2, max: 5.4 },
   { name: "hipAmp", min: 0.05, max: 1.55 },
   { name: "hipBias", min: -0.05, max: 0.48 },
   { name: "kneeAmp", min: 0, max: 1.9 },
@@ -59,10 +59,10 @@ export const GENES: readonly GeneSpec[] = [
   { name: "hipFlex", min: 0, max: 1 },
   { name: "kneeFlex", min: 0, max: 1 },
   // Negative is no jump. Only a positive amplitude can leave the ground on purpose.
-  { name: "jump", min: -1, max: 1 }
+  { name: "jump", min: -1, max: 1 },
+  // 0 stands. 1 is a low all-fours crawl. Bred and mutated with the rest.
+  { name: "quad", min: 0, max: 1 }
 ];
-
-const SHAPE_GENES = new Set(["leg", "torsoH", "torsoW", "arm", "hipFlex", "kneeFlex", "jump"]);
 
 export type Decoded = Record<string, number>;
 
@@ -101,7 +101,7 @@ export function setJumpFrequency(value: number): void {
 }
 
 export const PROTO: Decoded = {
-  freq: 2.2,
+  freq: 4.4,
   hipAmp: 0.82,
   hipBias: 0.16,
   kneeAmp: 0.70,
@@ -119,7 +119,8 @@ export const PROTO: Decoded = {
   arm: 1,
   hipFlex: 0.55,
   kneeFlex: 0.42,
-  jump: 0
+  jump: 0,
+  quad: 0
 };
 
 export type Rng = () => number;
@@ -175,13 +176,16 @@ export function morphFromDecoded(decoded: Decoded): Morph {
     arm: decoded.arm ?? PROTO.arm ?? 1,
     hipFlex: (decoded.hipFlex ?? PROTO.hipFlex ?? 0.55) * flexScale,
     kneeFlex: (decoded.kneeFlex ?? PROTO.kneeFlex ?? 0.42) * flexScale,
-    jump: (decoded.jump ?? 0) * jumpScale
+    jump: (decoded.jump ?? 0) * jumpScale,
+    quad: decoded.quad ?? PROTO.quad ?? 0
   });
 }
 
 export function encode(decoded: Decoded): number[] {
   return GENES.map((spec) => {
-    const value = decoded[spec.name] ?? (spec.min + spec.max) / 2;
+    // Missing quad stays bipedal. Other gaps use the middle of the range.
+    const fallback = spec.name === "quad" ? 0 : (spec.min + spec.max) / 2;
+    const value = decoded[spec.name] ?? fallback;
     return clamp01((value - spec.min) / (spec.max - spec.min));
   });
 }
@@ -190,31 +194,71 @@ export function randomGenome(rng: Rng): number[] {
   return GENES.map(() => rng());
 }
 
-function jitter(genes: readonly number[], rng: Rng, sigma: number): number[] {
-  return genes.map((g) => clamp01(g + gauss(rng) * sigma));
+function span(name: string, unit: number): number {
+  const spec = GENES.find((gene) => gene.name === name);
+  const lo = spec?.min ?? 0;
+  const hi = spec?.max ?? 1;
+  return lo + clamp01(unit) * (hi - lo);
 }
 
-/** Spread shape, flexibility, and jump so a generation is not one shared body. */
-function diversifyShape(genes: readonly number[], rng: Rng): number[] {
-  return genes.map((gene, i) => {
-    const name = GENES[i]?.name;
-    if (!name || !SHAPE_GENES.has(name)) return gene;
-    if (name === "jump") {
-      // Most stay grounded. The rest get a real upward amplitude.
-      return rng() < 0.62 ? clamp01(0.5 + gauss(rng) * 0.04) : clamp01(0.5 + 0.5 * rng());
-    }
-    return rng();
-  });
+/**
+ * Generation 0 is not a cluster around the prototype. Body proportions are
+ * spread across the lane, about a third spawn as all-fours, and jump amplitude
+ * runs from barely off the ground to a full hop.
+ */
+function starterGenome(rng: Rng, quadruped: boolean, index: number, pop: number, jumpBand: number): number[] {
+  const decoded: Decoded = {};
+  for (const spec of GENES) decoded[spec.name] = spec.min + rng() * (spec.max - spec.min);
+  const bins = Math.max(pop, 1);
+  const spread = (salt: number): number => {
+    const bin = (index * 5 + salt + Math.floor(rng() * bins)) % bins;
+    return (bin + 0.15 + rng() * 0.7) / bins;
+  };
+  decoded.leg = span("leg", spread(0));
+  decoded.torsoH = span("torsoH", spread(1));
+  decoded.torsoW = span("torsoW", spread(2));
+  decoded.arm = span("arm", spread(3));
+  decoded.hipFlex = spread(4);
+  decoded.kneeFlex = spread(5);
+  decoded.hipAmp = span("hipAmp", 0.28 + 0.72 * rng());
+  decoded.kneeAmp = span("kneeAmp", 0.25 + 0.75 * rng());
+  decoded.armAmp = span("armAmp", 0.15 + 0.85 * rng());
+  decoded.elbow = span("elbow", rng());
+  decoded.lean = span("lean", rng());
+  decoded.split = span("split", 0.35 + 0.65 * rng());
+  // Whole freq range is already about twice the old gait. Keep gen 0 in the quicker part.
+  decoded.freq = span("freq", 0.35 + 0.65 * rng());
+  decoded.quad = quadruped ? 0.78 + rng() * 0.22 : rng() * 0.18;
+  if (quadruped) {
+    decoded.hipFlex = Math.max(decoded.hipFlex ?? 0, 0.66 + rng() * 0.34);
+    decoded.kneeFlex = Math.max(decoded.kneeFlex ?? 0, 0.6 + rng() * 0.4);
+    decoded.arm = Math.max(decoded.arm ?? 1, span("arm", 0.55 + 0.45 * rng()));
+  }
+  if (jumpBand === 0) decoded.jump = -0.45 + rng() * 0.55;
+  else if (jumpBand === 1) decoded.jump = 0.12 + rng() * 0.38;
+  else decoded.jump = 0.62 + rng() * 0.38;
+  return encode(decoded);
 }
 
 export function initialPopulation(pop: number, rng: Rng): number[][] {
-  const proto = encode(PROTO);
-  const out: number[][] = [];
-  for (let i = 0; i < pop; i++) {
-    if (i < 3) out.push(jitter(proto, rng, 0.02));
-    else if (i < Math.floor(pop * 0.75)) out.push(diversifyShape(jitter(proto, rng, 0.07), rng));
-    else out.push(randomGenome(rng));
+  const quadCount = Math.max(1, Math.round(pop / 3));
+  const order = Array.from({ length: pop }, (_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const swap = order[i] ?? i;
+    order[i] = order[j] ?? j;
+    order[j] = swap;
   }
+  const quads = new Set(order.slice(0, quadCount));
+  const bands = Array.from({ length: pop }, (_, i) => i % 3);
+  for (let i = bands.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const swap = bands[i] ?? 0;
+    bands[i] = bands[j] ?? 0;
+    bands[j] = swap;
+  }
+  const out: number[][] = [];
+  for (let i = 0; i < pop; i++) out.push(starterGenome(rng, quads.has(i), i, pop, bands[i] ?? 0));
   return out;
 }
 
@@ -288,6 +332,10 @@ function legStep(
   };
 }
 
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
 export function writePose(
   decoded: Decoded,
   time: number,
@@ -295,7 +343,7 @@ export function writePose(
   limits: Morph["limits"] = LIMIT,
   crouch = 0
 ): void {
-  const freq = Math.max(0.2, decoded.freq ?? 1.4);
+  const freq = Math.max(0.2, decoded.freq ?? 4.4);
   const split = decoded.split ?? 1;
   const cycle = time * freq;
   const hipAmp = decoded.hipAmp ?? 0.82;
@@ -306,7 +354,8 @@ export function writePose(
   const armAmp = decoded.armAmp ?? 0.3;
   const elbow = decoded.elbow ?? 0.7;
   const toe = decoded.toe ?? 0;
-  const fold = Math.max(0, Math.min(1, crouch));
+  const crawl = crawlBlend(decoded.quad ?? 0);
+  const fold = Math.max(0, Math.min(1, crouch)) * (1 - crawl);
   const left = legStep(
     cycle,
     hipAmp * (1 - 0.82 * fold),
@@ -325,17 +374,34 @@ export function writePose(
   const ramp = Math.min(1, time / 1.4);
   const kneeCrouch = fold * 1.05 * ramp;
   const hipCrouch = fold * 0.32 * ramp;
-  const creep = 0;
 
-  out.spine = clamp((decoded.lean ?? 0) * (1 - 0.5 * fold) + fold * 0.05 * ramp, limits.spine[0], limits.spine[1]);
-  out.hipL = clamp(left.hip + turn + hipCrouch, limits.hip[0], limits.hip[1]);
-  out.hipR = clamp(right.hip - turn + hipCrouch, limits.hip[0], limits.hip[1]);
-  out.kneeL = clamp(left.knee + kneeCrouch + creep, limits.knee[0], limits.knee[1]);
-  out.kneeR = clamp(right.knee + kneeCrouch - creep, limits.knee[0], limits.knee[1]);
-  out.ankleL = clamp(toe * Math.sin(armPhase), limits.ankle[0], limits.ankle[1]);
-  out.ankleR = clamp(toe * Math.sin(armPhase + Math.PI * split), limits.ankle[0], limits.ankle[1]);
-  out.shoulderL = clamp(-armAmp * Math.sin(armPhase), limits.shoulder[0], limits.shoulder[1]);
-  out.shoulderR = clamp(-armAmp * Math.sin(armPhase + Math.PI * split), limits.shoulder[0], limits.shoulder[1]);
-  out.elbowL = clamp(elbow, limits.elbow[0], limits.elbow[1]);
-  out.elbowR = clamp(elbow, limits.elbow[0], limits.elbow[1]);
+  const phaseL = ((cycle % 1) + 1) % 1;
+  const phaseR = ((cycle + 0.5 * split) % 1 + 1) % 1;
+  const wave = (phase: number): number => Math.sin(phase * Math.PI * 2);
+  const hipSwing = Math.max(0.22, Math.min(0.5, hipAmp * 0.42));
+  const kneeSwing = Math.max(0.1, Math.min(0.38, kneeAmp * 0.2));
+  const armSwing = Math.max(0.16, Math.min(0.4, armAmp * 0.65));
+  const hipBase = clamp(1.05, limits.hip[0] + 0.04, limits.hip[1] - 0.05);
+  const kneeBase = clamp(1.48, limits.knee[0], limits.knee[1] - 0.05);
+  const shBase = clamp(1.0, limits.shoulder[0] + 0.04, limits.shoulder[1] - 0.08);
+  const elBase = clamp(1.15, limits.elbow[0], limits.elbow[1] - 0.05);
+  const mix = (stand: number, low: number, lo: number, hi: number): number =>
+    clamp(lerp(stand, low, crawl), lo, hi);
+
+  out.spine = mix(
+    (decoded.lean ?? 0) * (1 - 0.5 * fold) + fold * 0.05 * ramp,
+    -0.28,
+    limits.spine[0],
+    limits.spine[1]
+  );
+  out.hipL = mix(left.hip + turn + hipCrouch, hipBase + hipSwing * wave(phaseL) + turn * 0.3, limits.hip[0], limits.hip[1]);
+  out.hipR = mix(right.hip - turn + hipCrouch, hipBase + hipSwing * wave(phaseR) - turn * 0.3, limits.hip[0], limits.hip[1]);
+  out.kneeL = mix(left.knee + kneeCrouch, kneeBase + kneeSwing * Math.max(0, wave(phaseL)), limits.knee[0], limits.knee[1]);
+  out.kneeR = mix(right.knee + kneeCrouch, kneeBase + kneeSwing * Math.max(0, wave(phaseR)), limits.knee[0], limits.knee[1]);
+  out.ankleL = mix(toe * Math.sin(armPhase), toe * 0.35 * wave(phaseL), limits.ankle[0], limits.ankle[1]);
+  out.ankleR = mix(toe * Math.sin(armPhase + Math.PI * split), toe * 0.35 * wave(phaseR), limits.ankle[0], limits.ankle[1]);
+  out.shoulderL = mix(-armAmp * Math.sin(armPhase), shBase + armSwing * wave(phaseR), limits.shoulder[0], limits.shoulder[1]);
+  out.shoulderR = mix(-armAmp * Math.sin(armPhase + Math.PI * split), shBase + armSwing * wave(phaseL), limits.shoulder[0], limits.shoulder[1]);
+  out.elbowL = mix(elbow, elBase, limits.elbow[0], limits.elbow[1]);
+  out.elbowR = mix(elbow, elBase, limits.elbow[0], limits.elbow[1]);
 }

@@ -4,8 +4,10 @@ import {
   BODY_KEYS,
   FORE_R,
   FOOT,
+  LIFT,
   LIMB_R,
   SHIN_R,
+  crawlBlend,
   capsuleHalf,
   capsuleVolume,
   cuboidVolume,
@@ -38,11 +40,11 @@ const ROBOT_GROUP = (0x0002 << 16) | 0x0001;
 
 const GAIN = {
   spine: { k: 420, d: 55, max: 2500 },
-  hip: { k: 520, d: 70, max: 3500 },
-  knee: { k: 480, d: 65, max: 3200 },
+  hip: { k: 760, d: 88, max: 5200 },
+  knee: { k: 700, d: 82, max: 4800 },
   ankle: { k: 760, d: 70, max: 2800 },
-  shoulder: { k: 160, d: 18, max: 800 },
-  elbow: { k: 120, d: 14, max: 600 }
+  shoulder: { k: 260, d: 26, max: 1500 },
+  elbow: { k: 210, d: 22, max: 1200 }
 };
 
 export interface BodyPose {
@@ -154,6 +156,204 @@ function jumpChanceRate(): number {
   if (jumpFrequency >= 1) return 1;
   if (jumpFrequency <= 0) return 0.02;
   return jumpFrequency;
+}
+
+
+interface Q {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+interface V3 {
+  x: number;
+  y: number;
+  z: number;
+}
+interface PartPose {
+  x: number;
+  y: number;
+  z: number;
+  q: Q;
+}
+
+function qZ(angle: number): Q {
+  const h = angle * 0.5;
+  return { x: 0, y: 0, z: Math.sin(h), w: Math.cos(h) };
+}
+
+function qMul(a: Q, b: Q): Q {
+  return {
+    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+  };
+}
+
+function qRot(q: Q, p: V3): V3 {
+  const ix = q.w * p.x + q.y * p.z - q.z * p.y;
+  const iy = q.w * p.y + q.z * p.x - q.x * p.z;
+  const iz = q.w * p.z + q.x * p.y - q.y * p.x;
+  const iw = -q.x * p.x - q.y * p.y - q.z * p.z;
+  return {
+    x: ix * q.w + iw * -q.x + iy * -q.z - iz * -q.y,
+    y: iy * q.w + iw * -q.y + iz * -q.x - ix * -q.z,
+    z: iz * q.w + iw * -q.z + ix * -q.y - iy * -q.x
+  };
+}
+
+function vadd(a: V3, b: V3): V3 {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+/** Limb layout for a pitched crawl. Joint angles match the motor targets. */
+function crawlLayout(morph: Morph, pose: Pose, pitch: number): {
+  parts: Record<BodyKey, V3>;
+  rots: Record<BodyKey, Q>;
+  soleL: number;
+  soleR: number;
+  handL: number;
+  handR: number;
+  footXL: number;
+  footXR: number;
+  handXL: number;
+  handXR: number;
+  headY: number;
+} {
+  const qPelvis = qZ(pitch);
+  const qChest = qMul(qPelvis, qZ(pose.spine));
+  const qThighL = qMul(qPelvis, qZ(pose.hipL));
+  const qThighR = qMul(qPelvis, qZ(pose.hipR));
+  const qShinL = qMul(qThighL, qZ(-pose.kneeL));
+  const qShinR = qMul(qThighR, qZ(-pose.kneeR));
+  const qFootL = qMul(qShinL, qZ(pose.ankleL));
+  const qFootR = qMul(qShinR, qZ(pose.ankleR));
+  const qArmL = qMul(qChest, qZ(pose.shoulderL));
+  const qArmR = qMul(qChest, qZ(pose.shoulderR));
+  const qForeL = qMul(qArmL, qZ(pose.elbowL));
+  const qForeR = qMul(qArmR, qZ(pose.elbowR));
+  const origin: V3 = { x: 0, y: 0, z: 0 };
+  const hipL = vadd(origin, qRot(qPelvis, { x: 0, y: -morph.hipDrop, z: -morph.hipZ }));
+  const hipR = vadd(origin, qRot(qPelvis, { x: 0, y: -morph.hipDrop, z: morph.hipZ }));
+  const kneeL = vadd(hipL, qRot(qThighL, { x: 0, y: -morph.thigh, z: 0 }));
+  const kneeR = vadd(hipR, qRot(qThighR, { x: 0, y: -morph.thigh, z: 0 }));
+  const ankleL = vadd(kneeL, qRot(qShinL, { x: 0, y: -morph.shin, z: 0 }));
+  const ankleR = vadd(kneeR, qRot(qShinR, { x: 0, y: -morph.shin, z: 0 }));
+  const footL = vadd(ankleL, qRot(qFootL, { x: FOOT.heel, y: -FOOT.hy, z: 0 }));
+  const footR = vadd(ankleR, qRot(qFootR, { x: FOOT.heel, y: -FOOT.hy, z: 0 }));
+  const soleL = vadd(footL, qRot(qFootL, { x: 0, y: -FOOT.hy, z: 0 }));
+  const soleR = vadd(footR, qRot(qFootR, { x: 0, y: -FOOT.hy, z: 0 }));
+  const chest = vadd(
+    vadd(origin, qRot(qPelvis, { x: 0, y: morph.pelvis.hy, z: 0 })),
+    qRot(qChest, { x: 0, y: morph.chest.hy, z: 0 })
+  );
+  const shL = vadd(chest, qRot(qChest, { x: 0, y: morph.shoulderY, z: -morph.shoulderZ }));
+  const shR = vadd(chest, qRot(qChest, { x: 0, y: morph.shoulderY, z: morph.shoulderZ }));
+  const elbL = vadd(shL, qRot(qArmL, { x: 0, y: -morph.upperArm, z: 0 }));
+  const elbR = vadd(shR, qRot(qArmR, { x: 0, y: -morph.upperArm, z: 0 }));
+  const foreL = vadd(elbL, qRot(qForeL, { x: 0, y: -morph.forearm / 2, z: 0 }));
+  const foreR = vadd(elbR, qRot(qForeR, { x: 0, y: -morph.forearm / 2, z: 0 }));
+  const handL = vadd(elbL, qRot(qForeL, { x: 0, y: -morph.forearm - FORE_R * 0.35, z: 0 }));
+  const handR = vadd(elbR, qRot(qForeR, { x: 0, y: -morph.forearm - FORE_R * 0.35, z: 0 }));
+  const head = vadd(chest, qRot(qChest, { x: 0, y: morph.chest.hy + morph.headR * 1.3, z: 0 }));
+  const thighL = vadd(hipL, qRot(qThighL, { x: 0, y: -morph.thigh / 2, z: 0 }));
+  const thighR = vadd(hipR, qRot(qThighR, { x: 0, y: -morph.thigh / 2, z: 0 }));
+  const shinL = vadd(kneeL, qRot(qShinL, { x: 0, y: -morph.shin / 2, z: 0 }));
+  const shinR = vadd(kneeR, qRot(qShinR, { x: 0, y: -morph.shin / 2, z: 0 }));
+  const parts: Record<BodyKey, V3> = {
+    pelvis: origin,
+    chest,
+    thighL,
+    shinL,
+    footL,
+    thighR,
+    shinR,
+    footR,
+    armL: vadd(shL, qRot(qArmL, { x: 0, y: -morph.upperArm / 2, z: 0 })),
+    foreL,
+    armR: vadd(shR, qRot(qArmR, { x: 0, y: -morph.upperArm / 2, z: 0 })),
+    foreR
+  };
+  // thigh centers computed for clarity; arm centers already stored.
+  parts.thighL = thighL;
+  parts.thighR = thighR;
+  parts.shinL = shinL;
+  parts.shinR = shinR;
+  const rots: Record<BodyKey, Q> = {
+    pelvis: qPelvis,
+    chest: qChest,
+    thighL: qThighL,
+    shinL: qShinL,
+    footL: qFootL,
+    thighR: qThighR,
+    shinR: qShinR,
+    footR: qFootR,
+    armL: qArmL,
+    foreL: qForeL,
+    armR: qArmR,
+    foreR: qForeR
+  };
+  return {
+    parts,
+    rots,
+    soleL: soleL.y,
+    soleR: soleR.y,
+    handL: handL.y,
+    handR: handR.y,
+    footXL: soleL.x,
+    footXR: soleR.x,
+    handXL: handL.x,
+    handXR: handR.x,
+    headY: head.y
+  };
+}
+
+function fitCrawlPitch(morph: Morph, pose: Pose, crawl: number): number {
+  const prefer = -1.12 * crawl;
+  let best = prefer;
+  let bestScore = Infinity;
+  for (let i = 0; i <= 46; i++) {
+    const alpha = -0.4 - (1.1 * i) / 46;
+    const frame = crawlLayout(morph, pose, alpha);
+    const gap =
+      Math.abs(frame.handL - frame.soleL) + Math.abs(frame.handR - frame.soleR);
+    const front = (frame.handXL < 0.04 ? 0.55 : 0) + (frame.handXR < 0.04 ? 0.55 : 0);
+    const back = (frame.footXL > 0.06 ? 0.4 : 0) + (frame.footXR > 0.06 ? 0.4 : 0);
+    const span = (frame.handXL + frame.handXR) * 0.5 - (frame.footXL + frame.footXR) * 0.5;
+    const spanPen = span < 0.32 ? 0.65 : span > 1.6 ? 0.3 : 0;
+    const head = frame.headY < 0.18 ? 0.9 : 0;
+    const score = gap + front + back + spanPen + head + 0.2 * Math.abs(alpha - prefer);
+    if (score < bestScore) {
+      bestScore = score;
+      best = alpha;
+    }
+  }
+  return best;
+}
+
+function placeCrawl(
+  morph: Morph,
+  pose: Pose,
+  crawl: number,
+  spawnX: number,
+  spawnZ: number
+): Record<BodyKey, PartPose> {
+  const pitch = fitCrawlPitch(morph, pose, crawl);
+  const frame = crawlLayout(morph, pose, pitch);
+  const low = Math.min(frame.soleL, frame.soleR, frame.handL, frame.handR);
+  const shift = LIFT + 0.02 - low;
+  const out = {} as Record<BodyKey, PartPose>;
+  for (const key of BODY_KEYS) {
+    const part = frame.parts[key];
+    out[key] = {
+      x: part.x + spawnX,
+      y: part.y + shift,
+      z: part.z + spawnZ,
+      q: frame.rots[key]
+    };
+  }
+  return out;
 }
 
 export class CourseSim {
@@ -311,23 +511,42 @@ export class CourseSim {
     const morph = morphFromDecoded(decoded);
     const pelvisY = morph.pelvisStand;
     const chestY = pelvisY + morph.pelvis.hy + morph.chest.hy;
+    const pose0: Pose = {
+      spine: 0,
+      hipL: 0,
+      hipR: 0,
+      kneeL: 0,
+      kneeR: 0,
+      ankleL: 0,
+      ankleR: 0,
+      shoulderL: 0,
+      shoulderR: 0,
+      elbowL: 0,
+      elbowR: 0
+    };
+    writePose(decoded, 0, pose0, morph.limits, morph.crouch);
+    const crawl = crawlBlend(decoded.quad ?? 0);
+    const posed = crawl > 0.02 ? placeCrawl(morph, pose0, crawl, spawnX, spawnZ) : null;
     const make = (
+      key: BodyKey,
       x: number,
       y: number,
       z: number,
       ccd: boolean
     ): RAPIER.RigidBody => {
+      const part = posed?.[key];
       const desc = RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(x, y, z)
+        .setTranslation(part?.x ?? x, part?.y ?? y, part?.z ?? z)
         .setCanSleep(false)
         .setLinearDamping(0.05)
-        .setAngularDamping(2.2)
+        .setAngularDamping(1.6)
         .setCcdEnabled(ccd);
+      if (part) desc.setRotation(part.q);
       return this.world.createRigidBody(desc);
     };
 
-    const pelvis = make(spawnX, pelvisY, spawnZ, true);
-    const chest = make(spawnX, chestY, spawnZ, false);
+    const pelvis = make("pelvis", spawnX, pelvisY, spawnZ, true);
+    const chest = make("chest", spawnX, chestY, spawnZ, false);
 
     const hipY = pelvisY - morph.hipDrop;
     const thighY = hipY - morph.thigh / 2;
@@ -336,21 +555,21 @@ export class CourseSim {
     const ankleY = kneeY - morph.shin;
     const footY = ankleY - FOOT.hy;
 
-    const thighL = make(spawnX, thighY, spawnZ - morph.hipZ, false);
-    const thighR = make(spawnX, thighY, spawnZ + morph.hipZ, false);
-    const shinL = make(spawnX, shinY, spawnZ - morph.hipZ, true);
-    const shinR = make(spawnX, shinY, spawnZ + morph.hipZ, true);
-    const footL = make(spawnX + FOOT.heel, footY, spawnZ - morph.hipZ, true);
-    const footR = make(spawnX + FOOT.heel, footY, spawnZ + morph.hipZ, true);
+    const thighL = make("thighL", spawnX, thighY, spawnZ - morph.hipZ, false);
+    const thighR = make("thighR", spawnX, thighY, spawnZ + morph.hipZ, false);
+    const shinL = make("shinL", spawnX, shinY, spawnZ - morph.hipZ, true);
+    const shinR = make("shinR", spawnX, shinY, spawnZ + morph.hipZ, true);
+    const footL = make("footL", spawnX + FOOT.heel, footY, spawnZ - morph.hipZ, true);
+    const footR = make("footR", spawnX + FOOT.heel, footY, spawnZ + morph.hipZ, true);
 
     const shoulderY = chestY + morph.shoulderY;
     const armY = shoulderY - morph.upperArm / 2;
     const elbowY = shoulderY - morph.upperArm;
     const foreY = elbowY - morph.forearm / 2;
-    const armL = make(spawnX, armY, spawnZ - morph.shoulderZ, false);
-    const armR = make(spawnX, armY, spawnZ + morph.shoulderZ, false);
-    const foreL = make(spawnX, foreY, spawnZ - morph.shoulderZ, false);
-    const foreR = make(spawnX, foreY, spawnZ + morph.shoulderZ, false);
+    const armL = make("armL", spawnX, armY, spawnZ - morph.shoulderZ, false);
+    const armR = make("armR", spawnX, armY, spawnZ + morph.shoulderZ, false);
+    const foreL = make("foreL", spawnX, foreY, spawnZ - morph.shoulderZ, false);
+    const foreR = make("foreR", spawnX, foreY, spawnZ + morph.shoulderZ, false);
 
     const collide = (
       body: RAPIER.RigidBody,
@@ -394,8 +613,9 @@ export class CourseSim {
     collide(shinR, limb(morph.shin, SHIN_R, 1.8, 0.4), 0.4);
     collide(armL, limb(morph.upperArm, ARM_R, 1.0, 0.3), 0.3);
     collide(armR, limb(morph.upperArm, ARM_R, 1.0, 0.3), 0.3);
-    collide(foreL, limb(morph.forearm, FORE_R, 0.7, 0.3), 0.3);
-    collide(foreR, limb(morph.forearm, FORE_R, 0.7, 0.3), 0.3);
+    const handFriction = morph.quad >= 0.5 ? 1.2 : 0.3;
+    collide(foreL, limb(morph.forearm, FORE_R, 0.7, handFriction), handFriction);
+    collide(foreR, limb(morph.forearm, FORE_R, 0.7, handFriction), handFriction);
 
     const footDesc = (): RAPIER.ColliderDesc =>
       RAPIER.ColliderDesc.cuboid(FOOT.hx, FOOT.hy, FOOT.hz)
@@ -632,8 +852,10 @@ export class CourseSim {
       robot.jumpWindow = 0;
       return;
     }
-    const freq = Math.max(0.2, robot.decoded.freq ?? 1.4);
-    const cycle = Math.floor(this.time * freq);
+    const gait = Math.max(0.2, robot.decoded.freq ?? 4.4);
+    // Gait is about twice as fast as before. Keep hop chances near the old ceiling
+    // so the Jump frequency slider still means the same share of grounded chances.
+    const cycle = Math.floor(this.time * Math.min(gait, 2.6));
     // Impulse only with a foot on a solid, and only once until they leave and land.
     // Jump frequency keeps some of those chances. 1 takes all of them.
     if (this.time > 0.2 && cycle !== robot.jumpCycle && robot.grounded && !robot.jumpSpent) {
@@ -678,9 +900,9 @@ export class CourseSim {
       const span = Math.max(0.5, FINISH_X - robot.state.spawnX);
       const stand = robot.state.morph.pelvisStand;
       const crouch = robot.state.morph.crouch;
-      const yFall = stand * (0.36 - 0.16 * crouch);
-      const yScore = stand * (crouch > 0.4 ? 0.26 : 0.46);
-      const upCut = 0.38 - 0.32 * crouch;
+      const yFall = stand * (0.34 - 0.2 * crouch);
+      const yScore = stand * (crouch > 0.4 ? 0.16 : 0.46);
+      const upCut = 0.38 - 0.34 * crouch;
       const offCourse =
         Math.abs(pelvis.z) > LANE_HALF + 0.08 && pelvis.y < stand * 0.5;
       const tipped = upY < upCut || pelvis.y < yFall || offCourse;

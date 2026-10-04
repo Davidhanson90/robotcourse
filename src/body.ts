@@ -106,7 +106,9 @@ export interface Morph {
   };
   /** Upward jump strength. Zero means this robot cannot jump on purpose. */
   jump: number;
-  /** 0 stands tall. 1 folds into a crouch that can crawl. */
+  /** Heritable posture. 0 stands. 1 is a low four-point crawl. */
+  quad: number;
+  /** 0 stands tall. 1 folds low, including an all-fours stance. */
   crouch: number;
   /** Pelvis center height with straight legs and the sole just off the ground. */
   pelvisStand: number;
@@ -123,6 +125,17 @@ function through(stiff: number, mid: number, loose: number, t: number, tMid: num
   return lerp(mid, loose, (u - tMid) / (1 - tMid));
 }
 
+/**
+ * 0 is a standing biped. 1 plants the hands and holds a low four-point stance.
+ * Values between the cutoffs are a partial crouch so breeding can slide into it.
+ */
+export function crawlBlend(quad: number): number {
+  const q = Math.max(0, Math.min(1, quad));
+  if (q <= 0.34) return 0;
+  if (q >= 0.72) return 1;
+  return (q - 0.34) / 0.38;
+}
+
 /** Rigid-body sizes, joint anchors, and joint limits for one genome. */
 export function buildMorph(params: {
   leg: number;
@@ -132,6 +145,7 @@ export function buildMorph(params: {
   hipFlex: number;
   kneeFlex: number;
   jump: number;
+  quad?: number;
 }): Morph {
   const hipFlex = Math.max(0, Math.min(1, params.hipFlex));
   const kneeFlex = Math.max(0, Math.min(1, params.kneeFlex));
@@ -150,6 +164,8 @@ export function buildMorph(params: {
   const hipDrop = HIP_DROP * params.torsoH;
   const kneeCrouch = Math.max(0, Math.min(1, (kneeFlex - 0.62) / 0.38));
   const hipFold = Math.max(0, Math.min(1, (hipFlex - 0.4) / 0.6));
+  const quad = Math.max(0, Math.min(1, params.quad ?? 0));
+  const crawl = crawlBlend(quad);
   return {
     thigh,
     shin,
@@ -170,11 +186,15 @@ export function buildMorph(params: {
         through(-0.4, LIMIT.ankle[0], -1.15, kneeFlex, 0.42),
         through(0.45, LIMIT.ankle[1], 1.25, kneeFlex, 0.42)
       ],
-      shoulder: LIMIT.shoulder,
+      shoulder: [
+        LIMIT.shoulder[0] - 0.3 * crawl,
+        LIMIT.shoulder[1] + 0.6 * crawl
+      ] as const,
       elbow: LIMIT.elbow
     },
     jump: Math.max(0, params.jump),
-    crouch: kneeCrouch * (0.35 + 0.65 * hipFold),
+    quad,
+    crouch: Math.max(kneeCrouch * (0.35 + 0.65 * hipFold), crawl),
     pelvisStand: LIFT + FOOT.hy * 2 + shin + thigh + hipDrop
   };
 }
