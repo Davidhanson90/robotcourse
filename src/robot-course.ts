@@ -1,6 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { FINISH_BONUS, PROGRESS_WEIGHT, TIME_BONUS_MAX } from "./ga";
+import { FINISH_BONUS, PROGRESS_WEIGHT, TIME_BONUS_MAX, setFlexScale, setJumpScale } from "./ga";
 import { GEN_TIME } from "./course";
 import { CourseSim, SIM_DT } from "./sim";
 import { CourseView } from "./view";
@@ -118,7 +118,7 @@ export class RobotCourse extends LitElement {
       gap: 10px 14px;
       align-items: center;
       padding: 10px 12px;
-      max-width: min(920px, 100%);
+      max-width: min(1180px, 100%);
     }
     button, label.follow {
       font: inherit;
@@ -200,6 +200,8 @@ export class RobotCourse extends LitElement {
   @state() private playing = true;
   @state() private popSize = 16;
   @state() private simPop = 16;
+  @state() private flexibility = 100;
+  @state() private jump = 100;
   @state() private follow = false;
   @state() private progress = 0;
   @state() private leaderHue = 0.08;
@@ -263,7 +265,7 @@ export class RobotCourse extends LitElement {
           <header class="panel">
             <div class="brand">
               <h1><span class="mark" style="--swatch:${swatch}"></span>ROBOT COURSE</h1>
-              <p>Shape, joint range, and jump are genes. Tall, crouched, and the odd hop. Distance first, then a finish bonus, then time.</p>
+              <p>Shape, joint range, and jump are genes. Flexibility and Jump scale how much of that range and hop the field may use. Distance first, then a finish bonus, then time.</p>
             </div>
             <div class="stats">
               <div class="stat">
@@ -301,6 +303,28 @@ export class RobotCourse extends LitElement {
                 step="1"
                 .value=${String(this.popSize)}
                 @input=${this.onPop}
+              />
+            </label>
+            <label class="pop" title="0 is stiff. 100 allows the full hip and knee gene, including crouch and crawl.">
+              Flexibility ${this.flexibility}
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                .value=${String(this.flexibility)}
+                @input=${this.onFlexibility}
+              />
+            </label>
+            <label class="pop" title="0 means nobody can jump. 100 is the full jump gene. A foot still has to be on the ground.">
+              Jump ${this.jump}
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                .value=${String(this.jump)}
+                @input=${this.onJump}
               />
             </label>
             <label class="follow">
@@ -408,6 +432,27 @@ export class RobotCourse extends LitElement {
     if (Number.isFinite(value)) this.popSize = Math.max(MIN_POP, Math.min(MAX_POP, Math.round(value)));
   }
 
+  private onFlexibility(event: Event): void {
+    const value = Number((event.target as HTMLInputElement).value);
+    if (!Number.isFinite(value)) return;
+    this.flexibility = Math.max(0, Math.min(100, Math.round(value)));
+    this.pushExpression();
+  }
+
+  private onJump(event: Event): void {
+    const value = Number((event.target as HTMLInputElement).value);
+    if (!Number.isFinite(value)) return;
+    this.jump = Math.max(0, Math.min(100, Math.round(value)));
+    this.pushExpression();
+  }
+
+  /** Writes the slider scales. Genes are unchanged. Live robots pick it up immediately. */
+  private pushExpression(): void {
+    setFlexScale(this.flexibility / 100);
+    setJumpScale(this.jump / 100);
+    this.sim?.setExpression(this.flexibility / 100, this.jump / 100);
+  }
+
   private onFollow(event: Event): void {
     this.follow = (event.target as HTMLInputElement).checked;
   }
@@ -427,8 +472,11 @@ export class RobotCourse extends LitElement {
   private async boot(seed: number): Promise<void> {
     this.sim?.free();
     this.sim = null;
+    setFlexScale(this.flexibility / 100);
+    setJumpScale(this.jump / 100);
     try {
       this.sim = await CourseSim.create(this.popSize, seed);
+      this.sim.setExpression(this.flexibility / 100, this.jump / 100);
       this.ready = true;
       this.error = "";
       this.capture(false);

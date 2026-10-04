@@ -73,6 +73,23 @@ export function setAnkleCouple(value: number): void {
   ankleCouple = value;
 }
 
+/**
+ * How much of each robot's hipFlex and kneeFlex genes is allowed when limits
+ * are built. Breeding still stores the gene. 0 is stiff, 1 is the full gene.
+ */
+export let flexScale = 1;
+
+/** How much of each robot's jump gene is allowed. 0 means nobody can jump. */
+export let jumpScale = 1;
+
+export function setFlexScale(value: number): void {
+  flexScale = clamp01(value);
+}
+
+export function setJumpScale(value: number): void {
+  jumpScale = clamp01(value);
+}
+
 export const PROTO: Decoded = {
   freq: 2.2,
   hipAmp: 0.48,
@@ -135,16 +152,20 @@ export function decode(genes: readonly number[]): Decoded {
   return out;
 }
 
-/** Sizes and joint limits implied by a decoded genome. Missing shape genes use PROTO. */
+/**
+ * Sizes and joint limits implied by a decoded genome. Missing shape genes use PROTO.
+ * hipFlex, kneeFlex, and jump are multiplied by the HUD scales here, not written back
+ * into the genome.
+ */
 export function morphFromDecoded(decoded: Decoded): Morph {
   return buildMorph({
     leg: decoded.leg ?? PROTO.leg ?? 1,
     torsoH: decoded.torsoH ?? PROTO.torsoH ?? 1,
     torsoW: decoded.torsoW ?? PROTO.torsoW ?? 1,
     arm: decoded.arm ?? PROTO.arm ?? 1,
-    hipFlex: decoded.hipFlex ?? PROTO.hipFlex ?? 0.55,
-    kneeFlex: decoded.kneeFlex ?? PROTO.kneeFlex ?? 0.42,
-    jump: decoded.jump ?? 0
+    hipFlex: (decoded.hipFlex ?? PROTO.hipFlex ?? 0.55) * flexScale,
+    kneeFlex: (decoded.kneeFlex ?? PROTO.kneeFlex ?? 0.42) * flexScale,
+    jump: (decoded.jump ?? 0) * jumpScale
   });
 }
 

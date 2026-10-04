@@ -23,6 +23,8 @@ import {
   initialPopulation,
   morphFromDecoded,
   mulberry32,
+  setFlexScale,
+  setJumpScale,
   writePose,
   type Decoded,
   type Rng
@@ -75,6 +77,7 @@ interface Hinge {
   k: number;
   d: number;
   pick: (pose: Pose) => number;
+  limit: keyof Morph["limits"];
 }
 
 interface Robot {
@@ -209,6 +212,24 @@ export class CourseSim {
     this.stepCount += 1;
     this.time = this.stepCount * SIM_DT;
     this.collect();
+  }
+
+  /**
+   * Slider scales. Genes stay stored. Limits and jump strength are rebuilt
+   * for the robots already on the course, so the current generation picks it up.
+   */
+  setExpression(flexibility: number, jump: number): void {
+    setFlexScale(flexibility);
+    setJumpScale(jump);
+    for (const robot of this.internals) {
+      robot.state.morph = morphFromDecoded(robot.decoded);
+      for (const hinge of robot.hinges) {
+        const pair = robot.state.morph.limits[hinge.limit];
+        hinge.min = pair[0];
+        hinge.max = pair[1];
+        hinge.joint.setLimits(pair[0], pair[1]);
+      }
+    }
   }
 
   nextGeneration(pop = this.pop): void {
@@ -375,7 +396,8 @@ export class CourseSim {
       min: number,
       max: number,
       gain: { k: number; d: number; max: number },
-      pick: (pose: Pose) => number
+      pick: (pose: Pose) => number,
+      limit: keyof Morph["limits"]
     ): void => {
       const data = RAPIER.JointData.revolute(anchorA, anchorB, axis);
       const joint = this.world.createImpulseJoint(data, a, b, true) as RAPIER.RevoluteImpulseJoint;
@@ -383,7 +405,7 @@ export class CourseSim {
       joint.configureMotorModel(RAPIER.MotorModel.ForceBased);
       joint.setMotorMaxForce(gain.max);
       joint.setContactsEnabled(false);
-      hinges.push({ joint, min, max, k: gain.k, d: gain.d, pick });
+      hinges.push({ joint, min, max, k: gain.k, d: gain.d, pick, limit });
     };
 
     const zAxis = { x: 0, y: 0, z: 1 };
@@ -398,7 +420,8 @@ export class CourseSim {
       morph.limits.spine[0],
       morph.limits.spine[1],
       GAIN.spine,
-      (pose) => pose.spine
+      (pose) => pose.spine,
+      "spine"
     );
 
     const hip = (side: -1 | 1, thigh: RAPIER.RigidBody, pick: (pose: Pose) => number): void => {
@@ -411,7 +434,8 @@ export class CourseSim {
         morph.limits.hip[0],
         morph.limits.hip[1],
         GAIN.hip,
-        pick
+        pick,
+        "hip"
       );
     };
     hip(-1, thighL, (pose) => pose.hipL);
@@ -427,7 +451,8 @@ export class CourseSim {
         morph.limits.knee[0],
         morph.limits.knee[1],
         GAIN.knee,
-        pick
+        pick,
+        "knee"
       );
     };
     knee(thighL, shinL, (pose) => pose.kneeL);
@@ -443,7 +468,8 @@ export class CourseSim {
         morph.limits.ankle[0],
         morph.limits.ankle[1],
         GAIN.ankle,
-        pick
+        pick,
+        "ankle"
       );
     };
     ankle(shinL, footL, (pose) => pose.ankleL);
@@ -459,7 +485,8 @@ export class CourseSim {
         morph.limits.shoulder[0],
         morph.limits.shoulder[1],
         GAIN.shoulder,
-        pick
+        pick,
+        "shoulder"
       );
     };
     shoulder(-1, armL, (pose) => pose.shoulderL);
@@ -475,7 +502,8 @@ export class CourseSim {
         morph.limits.elbow[0],
         morph.limits.elbow[1],
         GAIN.elbow,
-        pick
+        pick,
+        "elbow"
       );
     };
     elbow(armL, foreL, (pose) => pose.elbowL);
