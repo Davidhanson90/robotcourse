@@ -41,9 +41,9 @@ export interface GeneSpec {
 
 export const GENES: readonly GeneSpec[] = [
   { name: "freq", min: 0.7, max: 2.7 },
-  { name: "hipAmp", min: 0.05, max: 0.95 },
+  { name: "hipAmp", min: 0.05, max: 1.55 },
   { name: "hipBias", min: -0.05, max: 0.48 },
-  { name: "kneeAmp", min: 0, max: 1.2 },
+  { name: "kneeAmp", min: 0, max: 1.9 },
   { name: "kneePhase", min: -1.1, max: 1.25 },
   { name: "kneeStance", min: 0.02, max: 0.38 },
   { name: "armAmp", min: 0.05, max: 0.85 },
@@ -102,9 +102,9 @@ export function setJumpFrequency(value: number): void {
 
 export const PROTO: Decoded = {
   freq: 2.2,
-  hipAmp: 0.48,
+  hipAmp: 0.82,
   hipBias: 0.16,
-  kneeAmp: 0.02,
+  kneeAmp: 0.70,
   kneePhase: 0,
   kneeStance: 0.06,
   armAmp: 0.28,
@@ -298,10 +298,10 @@ export function writePose(
   const freq = Math.max(0.2, decoded.freq ?? 1.4);
   const split = decoded.split ?? 1;
   const cycle = time * freq;
-  const hipAmp = decoded.hipAmp ?? 0.5;
+  const hipAmp = decoded.hipAmp ?? 0.82;
   const hipBias = decoded.hipBias ?? 0.1;
   const turn = decoded.turn ?? 0;
-  const kneeAmp = decoded.kneeAmp ?? 0.6;
+  const kneeAmp = decoded.kneeAmp ?? 0.70;
   const stance = decoded.kneeStance ?? 0.08;
   const armAmp = decoded.armAmp ?? 0.3;
   const elbow = decoded.elbow ?? 0.7;

@@ -24,8 +24,8 @@ export const LIFT = 0.025;
 
 export const LIMIT = {
   spine: [-0.4, 0.55] as const,
-  hip: [-0.95, 1.2] as const,
-  knee: [0, 1.9] as const,
+  hip: [-1.4, 1.75] as const,
+  knee: [0, 2.45] as const,
   ankle: [-0.75, 0.85] as const,
   shoulder: [-1.15, 1.15] as const,
   elbow: [0.12, 2.05] as const
@@ -164,8 +164,8 @@ export function buildMorph(params: {
     shoulderZ: SHOULDER_Z * params.torsoW,
     limits: {
       spine: LIMIT.spine,
-      hip: [through(-0.28, LIMIT.hip[0], -1.55, hipFlex, 0.55), through(0.4, LIMIT.hip[1], 2.05, hipFlex, 0.55)],
-      knee: [0, through(0.28, LIMIT.knee[1], 2.55, kneeFlex, 0.42)],
+      hip: [through(-0.28, LIMIT.hip[0], -2.15, hipFlex, 0.55), through(0.4, LIMIT.hip[1], 2.7, hipFlex, 0.55)],
+      knee: [0, through(0.28, LIMIT.knee[1], 3.15, kneeFlex, 0.42)],
       ankle: [
         through(-0.4, LIMIT.ankle[0], -1.15, kneeFlex, 0.42),
         through(0.45, LIMIT.ankle[1], 1.25, kneeFlex, 0.42)
