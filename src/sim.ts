@@ -23,6 +23,7 @@ import {
   initialPopulation,
   morphFromDecoded,
   mulberry32,
+  jumpFrequency,
   setFlexScale,
   setJumpScale,
   writePose,
@@ -135,6 +136,24 @@ function zPitch(body: RAPIER.RigidBody): number {
 
 function clampRange(angle: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, angle));
+}
+
+/** Stable 0..1 value. Not the breed rng, so a skipped hop does not change the next generation. */
+function unitHash(index: number, cycle: number): number {
+  let x = Math.imul(index + 1, 0x9e3779b1) ^ Math.imul(cycle + 1, 0x85ebca6b);
+  x = Math.imul(x ^ (x >>> 16), 0xc2b2ae35);
+  x = Math.imul(x ^ (x >>> 13), 0x27d4eb2f);
+  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+}
+
+/**
+ * Slider 0 still allows a rare hop. Slider 1 takes every grounded chance.
+ * In between, the slider is the share of those chances.
+ */
+function jumpChanceRate(): number {
+  if (jumpFrequency >= 1) return 1;
+  if (jumpFrequency <= 0) return 0.02;
+  return jumpFrequency;
 }
 
 export class CourseSim {
@@ -616,15 +635,20 @@ export class CourseSim {
     const freq = Math.max(0.2, robot.decoded.freq ?? 1.4);
     const cycle = Math.floor(this.time * freq);
     // Impulse only with a foot on a solid, and only once until they leave and land.
+    // Jump frequency keeps some of those chances. 1 takes all of them.
     if (this.time > 0.2 && cycle !== robot.jumpCycle && robot.grounded && !robot.jumpSpent) {
       robot.jumpCycle = cycle;
-      robot.jumpSpent = true;
-      robot.jumpWindow = 0.1;
-      const vy = amp * 3.4;
-      const vx = amp * 0.45;
-      for (const body of robot.rigid) {
-        const mass = body.mass();
-        body.applyImpulse({ x: vx * mass, y: vy * mass, z: 0 }, true);
+      const rate = jumpChanceRate();
+      const take = rate >= 1 || unitHash(robot.state.index, cycle) < rate;
+      if (take) {
+        robot.jumpSpent = true;
+        robot.jumpWindow = 0.1;
+        const vy = amp * 3.4;
+        const vx = amp * 0.45;
+        for (const body of robot.rigid) {
+          const mass = body.mass();
+          body.applyImpulse({ x: vx * mass, y: vy * mass, z: 0 }, true);
+        }
       }
     }
     if (robot.jumpWindow > 0) {

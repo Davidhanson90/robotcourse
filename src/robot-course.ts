@@ -1,6 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { FINISH_BONUS, PROGRESS_WEIGHT, TIME_BONUS_MAX, setFlexScale, setJumpScale } from "./ga";
+import { FINISH_BONUS, PROGRESS_WEIGHT, TIME_BONUS_MAX, setFlexScale, setJumpFrequency, setJumpScale } from "./ga";
 import { GEN_TIME } from "./course";
 import { CourseSim, SIM_DT } from "./sim";
 import { CourseView } from "./view";
@@ -202,6 +202,7 @@ export class RobotCourse extends LitElement {
   @state() private simPop = 16;
   @state() private flexibility = 100;
   @state() private jump = 100;
+  @state() private jumpFrequency = 40;
   @state() private follow = false;
   @state() private progress = 0;
   @state() private leaderHue = 0.08;
@@ -265,7 +266,7 @@ export class RobotCourse extends LitElement {
           <header class="panel">
             <div class="brand">
               <h1><span class="mark" style="--swatch:${swatch}"></span>ROBOT COURSE</h1>
-              <p>Shape, joint range, and jump are genes. Flexibility and Jump scale how much of that range and hop the field may use. Distance first, then a finish bonus, then time.</p>
+              <p>Shape, joint range, and jump are genes. Flexibility and Jump scale how much of that range and hop the field may use. Jump frequency sets how often a grounded robot may take that hop. Distance first, then a finish bonus, then time.</p>
             </div>
             <div class="stats">
               <div class="stat">
@@ -325,6 +326,17 @@ export class RobotCourse extends LitElement {
                 step="1"
                 .value=${String(this.jump)}
                 @input=${this.onJump}
+              />
+            </label>
+            <label class="pop" title="0 is almost never. 100 is as often as a foot on the ground allows. No jump in the air, and no second jump until they land.">
+              Jump frequency ${this.jumpFrequency}
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                .value=${String(this.jumpFrequency)}
+                @input=${this.onJumpFrequency}
               />
             </label>
             <label class="follow">
@@ -446,10 +458,18 @@ export class RobotCourse extends LitElement {
     this.pushExpression();
   }
 
+  private onJumpFrequency(event: Event): void {
+    const value = Number((event.target as HTMLInputElement).value);
+    if (!Number.isFinite(value)) return;
+    this.jumpFrequency = Math.max(0, Math.min(100, Math.round(value)));
+    this.pushExpression();
+  }
+
   /** Writes the slider scales. Genes are unchanged. Live robots pick it up immediately. */
   private pushExpression(): void {
     setFlexScale(this.flexibility / 100);
     setJumpScale(this.jump / 100);
+    setJumpFrequency(this.jumpFrequency / 100);
     this.sim?.setExpression(this.flexibility / 100, this.jump / 100);
   }
 
@@ -474,6 +494,7 @@ export class RobotCourse extends LitElement {
     this.sim = null;
     setFlexScale(this.flexibility / 100);
     setJumpScale(this.jump / 100);
+    setJumpFrequency(this.jumpFrequency / 100);
     try {
       this.sim = await CourseSim.create(this.popSize, seed);
       this.sim.setExpression(this.flexibility / 100, this.jump / 100);

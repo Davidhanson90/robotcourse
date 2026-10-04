@@ -90,6 +90,16 @@ export function setJumpScale(value: number): void {
   jumpScale = clamp01(value);
 }
 
+/**
+ * Share of grounded jump chances a robot may take. Genes and jump strength
+ * are unchanged. 0 is almost never, 1 is every chance the grounded rule allows.
+ */
+export let jumpFrequency = 0.4;
+
+export function setJumpFrequency(value: number): void {
+  jumpFrequency = clamp01(value);
+}
+
 export const PROTO: Decoded = {
   freq: 2.2,
   hipAmp: 0.48,
