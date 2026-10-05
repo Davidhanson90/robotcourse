@@ -593,6 +593,45 @@ const SHAPE_GENES = new Set([
   "segments"
 ]);
 
+/**
+ * Speed and jump traits. When winners carry more of these than losers, offspring
+ * get a directed upward nudge on top of louder random mutation.
+ */
+const ACCELERABLE_GENES = new Set([
+  "freq",
+  "hipAmp",
+  "kneeAmp",
+  "jump",
+  "armDrive",
+  "toe",
+  "armAmp"
+]);
+
+/**
+ * Ranked parents (best first). Positive entry = winners hold more of that gene
+ * than the bottom quartile, so breeding should accelerate it upward.
+ */
+function accelerationBias(parents: readonly number[][]): Float64Array {
+  const n = GENES.length;
+  const bias = new Float64Array(n);
+  if (parents.length < 4) return bias;
+  const band = Math.max(2, Math.ceil(parents.length * 0.25));
+  for (let i = 0; i < n; i++) {
+    const name = GENES[i]?.name;
+    if (!name || !ACCELERABLE_GENES.has(name)) continue;
+    let top = 0;
+    let bot = 0;
+    for (let p = 0; p < band; p++) {
+      top += parents[p]?.[i] ?? 0.5;
+      bot += parents[parents.length - 1 - p]?.[i] ?? 0.5;
+    }
+    const diff = top / band - bot / band;
+    // Only steer when the fitness link is clear; cap so form diversity survives.
+    if (diff > 0.035) bias[i] = Math.min(0.24, diff * 0.65);
+  }
+  return bias;
+}
+
 function crossover(a: readonly number[], b: readonly number[], rng: Rng): number[] {
   const len = Math.max(a.length, b.length, GENES.length);
   const child: number[] = [];
@@ -622,10 +661,12 @@ function crossover(a: readonly number[], b: readonly number[], rng: Rng): number
   return child;
 }
 
-function mutate(genes: readonly number[], rng: Rng): number[] {
+function mutate(genes: readonly number[], rng: Rng, bias?: Float64Array): number[] {
   return genes.map((gene, i) => {
     const name = GENES[i]?.name;
     const shape = name !== undefined && SHAPE_GENES.has(name);
+    const accel = name !== undefined && ACCELERABLE_GENES.has(name);
+    const directed = bias?.[i] ?? 0;
     // Form mutates rarely: flip to a neighbor topology or stay put.
     if (name === "form") {
       if (rng() > 0.08) return gene;
@@ -637,32 +678,51 @@ function mutate(genes: readonly number[], rng: Rng): number[] {
       }
       return rng();
     }
-    const rate = shape ? 0.2 : 0.34;
-    if (rng() > rate) return gene;
-    const sigma = shape
-      ? rng() < 0.12
-        ? 0.14
-        : rng() < 0.4
-          ? 0.07
-          : 0.03
-      : rng() < 0.18
-        ? 0.28
-        : rng() < 0.45
-          ? 0.12
-          : 0.055;
-    return clamp01(gene + gauss(rng) * sigma);
+    // Louder next-gen exploration; jump/speed genes mutate even more often.
+    const rate = accel ? 0.55 : shape ? 0.28 : 0.48;
+    if (rng() > rate && directed <= 0) return gene;
+    if (rng() > rate && directed > 0 && rng() > 0.55) {
+      // Still apply a small upward steer even when the random roll skips.
+      return clamp01(gene + directed * (0.25 + rng() * 0.55));
+    }
+    const sigma = accel
+      ? rng() < 0.28
+        ? 0.4
+        : rng() < 0.55
+          ? 0.2
+          : 0.09
+      : shape
+        ? rng() < 0.15
+          ? 0.18
+          : rng() < 0.45
+            ? 0.09
+            : 0.04
+        : rng() < 0.22
+          ? 0.36
+          : rng() < 0.5
+            ? 0.16
+            : 0.07;
+    let next = gene + gauss(rng) * sigma;
+    if (directed > 0) {
+      // Winners ran/jumped harder — push offspring up, not just random drift.
+      next += directed * (0.4 + rng() * 1.1);
+      if (rng() < 0.4) next += directed * (0.6 + rng() * 0.9);
+    }
+    return clamp01(next);
   });
 }
 
 /**
  * `parents` must already be sorted best-first. Returns a new population of genomes.
- * Elites are copied whole. Children blend two parents then mutate — shape genes
- * softer than gait — so successful morphs visibly take over.
+ * Elites are copied whole. Children blend two parents then mutate harder than
+ * before; when jump/speed genes correlate with fitness, those traits get an
+ * upward bias so successful hop and stride amplify in the next lineup.
  */
 export function breed(parents: readonly number[][], pop: number, rng: Rng): number[][] {
   if (parents.length === 0) return initialPopulation(pop, rng);
   const eliteN = Math.max(2, Math.round(pop * 0.2));
   const immigrants = pop >= 14 ? 1 : 0;
+  const bias = accelerationBias(parents);
   const out: number[][] = [];
   for (let i = 0; i < eliteN && i < parents.length; i++) {
     out.push((parents[i] ?? []).slice());
@@ -670,7 +730,7 @@ export function breed(parents: readonly number[][], pop: number, rng: Rng): numb
   while (out.length < pop - immigrants) {
     const a = tournament(parents, rng);
     const b = tournament(parents, rng);
-    out.push(mutate(crossover(a, b, rng), rng));
+    out.push(mutate(crossover(a, b, rng), rng, bias));
   }
   while (out.length < pop) {
     const kind = ARCHETYPES[Math.floor(rng() * ARCHETYPES.length)] ?? "strider";
