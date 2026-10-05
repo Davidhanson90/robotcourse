@@ -266,7 +266,7 @@ export class RobotCourse extends LitElement {
           <header class="panel">
             <div class="brand">
               <h1><span class="mark" style="--swatch:${swatch}"></span>ROBOT COURSE</h1>
-              <p>The first generation is a random spread of bodies. Some start on all fours. Shape, posture, joint range, and jump are genes. Flexibility and Jump scale that range and hop. Jump frequency sets how often a grounded robot may take that hop. Distance first, then a finish bonus, then time.</p>
+              <p>Generation 0 seeds different strategies — tall, stocky, striders, crawlers, jumpers, stiff or flexible, arm-driven, lean-heavy. Shape, gait, posture, jump, and arm drive are genes. Flexibility and Jump scale that range and hop. Jump frequency sets how often a grounded robot may take that hop. Distance first, then a finish bonus, then time.</p>
             </div>
             <div class="stats">
               <div class="stat">

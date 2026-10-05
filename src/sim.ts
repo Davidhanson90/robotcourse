@@ -39,12 +39,12 @@ const GROUND_GROUP = (0x0001 << 16) | 0x0002;
 const ROBOT_GROUP = (0x0002 << 16) | 0x0001;
 
 const GAIN = {
-  spine: { k: 420, d: 55, max: 2500 },
-  hip: { k: 760, d: 88, max: 5200 },
-  knee: { k: 700, d: 82, max: 4800 },
-  ankle: { k: 760, d: 70, max: 2800 },
-  shoulder: { k: 260, d: 26, max: 1500 },
-  elbow: { k: 210, d: 22, max: 1200 }
+  spine: { k: 580, d: 62, max: 3200 },
+  hip: { k: 1180, d: 105, max: 7800 },
+  knee: { k: 1080, d: 98, max: 7200 },
+  ankle: { k: 920, d: 82, max: 3600 },
+  shoulder: { k: 520, d: 42, max: 3000 },
+  elbow: { k: 440, d: 38, max: 2400 }
 };
 
 export interface BodyPose {
@@ -539,7 +539,7 @@ export class CourseSim {
         .setTranslation(part?.x ?? x, part?.y ?? y, part?.z ?? z)
         .setCanSleep(false)
         .setLinearDamping(0.05)
-        .setAngularDamping(1.6)
+        .setAngularDamping(1.25)
         .setCcdEnabled(ccd);
       if (part) desc.setRotation(part.q);
       return this.world.createRigidBody(desc);

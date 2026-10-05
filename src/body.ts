@@ -23,12 +23,12 @@ export const FOOT = { hx: 0.22, hy: 0.045, hz: 0.11, heel: -0.1 };
 export const LIFT = 0.025;
 
 export const LIMIT = {
-  spine: [-0.4, 0.55] as const,
-  hip: [-1.4, 1.75] as const,
-  knee: [0, 2.45] as const,
-  ankle: [-0.75, 0.85] as const,
-  shoulder: [-1.15, 1.15] as const,
-  elbow: [0.12, 2.05] as const
+  spine: [-0.48, 0.62] as const,
+  hip: [-1.55, 1.95] as const,
+  knee: [0, 2.55] as const,
+  ankle: [-0.85, 0.95] as const,
+  shoulder: [-1.35, 1.35] as const,
+  elbow: [0.1, 2.15] as const
 };
 
 /** Pelvis center height when the sole is `lift` meters above y = 0. */
@@ -180,15 +180,15 @@ export function buildMorph(params: {
     shoulderZ: SHOULDER_Z * params.torsoW,
     limits: {
       spine: LIMIT.spine,
-      hip: [through(-0.28, LIMIT.hip[0], -2.15, hipFlex, 0.55), through(0.4, LIMIT.hip[1], 2.7, hipFlex, 0.55)],
-      knee: [0, through(0.28, LIMIT.knee[1], 3.15, kneeFlex, 0.42)],
+      hip: [through(-0.32, LIMIT.hip[0], -2.35, hipFlex, 0.55), through(0.45, LIMIT.hip[1], 2.95, hipFlex, 0.55)],
+      knee: [0, through(0.32, LIMIT.knee[1], 3.35, kneeFlex, 0.42)],
       ankle: [
         through(-0.4, LIMIT.ankle[0], -1.15, kneeFlex, 0.42),
         through(0.45, LIMIT.ankle[1], 1.25, kneeFlex, 0.42)
       ],
       shoulder: [
-        LIMIT.shoulder[0] - 0.3 * crawl,
-        LIMIT.shoulder[1] + 0.6 * crawl
+        LIMIT.shoulder[0] - 0.45 * crawl,
+        LIMIT.shoulder[1] + 0.85 * crawl
       ] as const,
       elbow: LIMIT.elbow
     },
