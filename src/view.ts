@@ -1,21 +1,12 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import {
-  ARM_R,
-  FORE_R,
-  FOOT,
-  LIMB_R,
-  SHIN_R,
-  capsuleHalf,
-  type BodyKey,
-  type Morph
-} from "./body";
+import { capsuleHalf, type Morph, type PartSpec } from "./body";
 import { FINISH_X, LANE_HALF, SOLIDS, VALLEY_TOP, surfaceY } from "./course";
 import type { CourseSim } from "./sim";
 import type { RobotState } from "./sim";
 
 interface RobotVisual {
-  parts: Partial<Record<BodyKey, THREE.Object3D>>;
+  parts: Record<string, THREE.Object3D>;
   visor: THREE.MeshStandardMaterial;
   accent: THREE.MeshStandardMaterial;
 }
@@ -132,7 +123,7 @@ export class CourseView {
       const visual = this.robots.get(robot.index);
       if (!visual) continue;
       for (const [key, obj] of Object.entries(visual.parts)) {
-        const pose = robot.bodies[key as BodyKey];
+        const pose = robot.bodies[key];
         if (!obj || !pose) continue;
         obj.visible = !robot.hidden;
         obj.position.set(pose.x, pose.y, pose.z);
@@ -147,13 +138,17 @@ export class CourseView {
       return;
     }
     this.leaderHue = leader.hue;
-    const pelvis = leader.bodies.pelvis;
-    const ground = surfaceY(pelvis.x, pelvis.z);
+    const root = leader.bodies[leader.morph.rootId] ?? Object.values(leader.bodies)[0];
+    if (!root) {
+      this.ring.visible = false;
+      return;
+    }
+    const ground = surfaceY(root.x, root.z);
     this.ring.visible = ground !== null && !leader.fallen;
-    if (ground !== null) this.ring.position.set(pelvis.x, ground + 0.035, pelvis.z);
-    this.lookAt.set(pelvis.x, pelvis.y + 0.35, pelvis.z);
+    if (ground !== null) this.ring.position.set(root.x, ground + 0.035, root.z);
+    this.lookAt.set(root.x, root.y + 0.35, root.z);
     (this.ring.material as THREE.MeshBasicMaterial).color.setHSL(leader.hue, 0.85, 0.62);
-    this.pushTrail(pelvis.x, (ground ?? pelvis.y) + 0.06, pelvis.z);
+    this.pushTrail(root.x, (ground ?? root.y) + 0.06, root.z);
   }
 
   render(): void {
@@ -180,7 +175,7 @@ export class CourseView {
     });
   }
 
-  /** One visual per robot, sized from that robot's morph (its genome), never a shared body. */
+  /** One visual per robot, sized from that robot's morph (its genome). */
   private rebuildRobots(sim: CourseSim): void {
     for (const visual of this.robots.values()) {
       for (const obj of Object.values(visual.parts)) {
@@ -230,106 +225,171 @@ export class CourseView {
       roughness: 0.35,
       metalness: 0.7
     });
+    const blobMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(hue, 0.7, 0.42),
+      roughness: 0.28,
+      metalness: 0.15,
+      emissive: new THREE.Color().setHSL(hue, 0.8, 0.2),
+      emissiveIntensity: 0.2
+    });
 
-    const parts: Partial<Record<BodyKey, THREE.Object3D>> = {};
-    const add = (key: BodyKey, obj: THREE.Object3D): void => {
+    const parts: Record<string, THREE.Object3D> = {};
+    for (const part of morph.parts) {
+      const obj = this.partMesh(part, { armor, dark, accent, visor, sole, joint, blobMat });
       this.scene.add(obj);
-      parts[key] = obj;
-    };
-
-    const pelvis = new THREE.Group();
-    pelvis.add(this.mesh(this.box(morph.pelvis.hx * 2, morph.pelvis.hy * 2, morph.pelvis.hz * 2), dark, true));
-    const beltR = Math.min(morph.pelvis.hx, morph.pelvis.hz) * 0.86;
-    const belt = this.mesh(
-      this.geo(`belt-${beltR.toFixed(3)}`, () => new THREE.TorusGeometry(beltR, 0.018, 8, 18)),
-      accent,
-      false
-    );
-    belt.rotation.x = Math.PI / 2;
-    pelvis.add(belt);
-    for (const side of [-1, 1]) {
-      const ball = this.mesh(this.geo("hip", () => new THREE.SphereGeometry(0.07, 14, 12)), joint, true);
-      ball.position.set(0.02, -morph.hipDrop, side * morph.hipZ);
-      pelvis.add(ball);
+      parts[part.id] = obj;
     }
-    add("pelvis", pelvis);
-
-    const chest = new THREE.Group();
-    chest.add(this.mesh(this.box(morph.chest.hx * 2, morph.chest.hy * 2, morph.chest.hz * 2), armor, true));
-    const plate = this.mesh(this.box(morph.chest.hx * 0.7, morph.chest.hy * 0.85, 0.04), accent, true);
-    plate.position.set(morph.chest.hx + 0.01, 0.02, 0);
-    chest.add(plate);
-    const pack = this.mesh(this.box(0.08, morph.chest.hy * 0.7, morph.chest.hz * 0.7), dark, true);
-    pack.position.set(-morph.chest.hx - 0.03, 0.04, 0);
-    chest.add(pack);
-    const head = new THREE.Group();
-    head.position.set(0, morph.chest.hy + morph.headR * 0.55, 0);
-    head.add(this.mesh(this.geo(`head-${morph.headR.toFixed(3)}`, () => new THREE.SphereGeometry(morph.headR, 28, 18)), armor, true));
-    const visorMesh = this.mesh(this.box(0.06, 0.07, morph.headR * 1.15), visor, false);
-    visorMesh.position.set(morph.headR * 0.78, 0.02, 0);
-    head.add(visorMesh);
-    for (const side of [-1, 1]) {
-      const eye = this.mesh(this.geo("eye", () => new THREE.SphereGeometry(0.028, 10, 8)), visor, false);
-      eye.position.set(morph.headR * 0.72, 0.035, side * 0.055);
-      head.add(eye);
-      const ear = this.mesh(this.geo("ear", () => new THREE.CylinderGeometry(0.012, 0.012, 0.14, 8)), dark, false);
-      ear.position.set(0, morph.headR * 0.85, side * 0.08);
-      head.add(ear);
-    }
-    const neck = this.mesh(this.geo("neck", () => new THREE.CylinderGeometry(0.05, 0.06, 0.08, 12)), dark, true);
-    neck.position.set(0, -morph.headR * 0.72, 0);
-    head.add(neck);
-    chest.add(head);
-    for (const side of [-1, 1]) {
-      const ball = this.mesh(this.geo("shoulder", () => new THREE.SphereGeometry(0.065, 14, 12)), joint, true);
-      ball.position.set(0, morph.shoulderY, side * morph.shoulderZ);
-      chest.add(ball);
-    }
-    add("chest", chest);
-
-    add("thighL", this.limb(morph.thigh, LIMB_R, armor, joint, true));
-    add("thighR", this.limb(morph.thigh, LIMB_R, armor, joint, true));
-    add("shinL", this.limb(morph.shin, SHIN_R, dark, joint, true));
-    add("shinR", this.limb(morph.shin, SHIN_R, dark, joint, true));
-    add("footL", this.footMesh(sole, accent));
-    add("footR", this.footMesh(sole, accent));
-    add("armL", this.limb(morph.upperArm, ARM_R, armor, joint, false));
-    add("armR", this.limb(morph.upperArm, ARM_R, armor, joint, false));
-    add("foreL", this.limb(morph.forearm, FORE_R, dark, joint, false, true));
-    add("foreR", this.limb(morph.forearm, FORE_R, dark, joint, false, true));
-
     return { parts, visor, accent };
   }
 
-  private footMesh(sole: THREE.Material, accent: THREE.Material): THREE.Group {
+  private partMesh(
+    part: PartSpec,
+    mats: {
+      armor: THREE.Material;
+      dark: THREE.Material;
+      accent: THREE.Material;
+      visor: THREE.Material;
+      sole: THREE.Material;
+      joint: THREE.Material;
+      blobMat: THREE.Material;
+    }
+  ): THREE.Object3D {
     const group = new THREE.Group();
-    const foot = this.mesh(this.box(FOOT.hx * 2, FOOT.hy * 2, FOOT.hz * 2), sole, true);
-    group.add(foot);
-    const stripe = this.mesh(this.box(FOOT.hx * 1.1, 0.012, FOOT.hz * 2.05), accent, false);
-    stripe.position.y = FOOT.hy + 0.004;
-    group.add(stripe);
-    return group;
-  }
+    const role = part.role ?? "limb";
+    const cast = role !== "foot";
 
-  private limb(
-    length: number,
-    radius: number,
-    material: THREE.Material,
-    joint: THREE.Material,
-    cast: boolean,
-    hand = false
-  ): THREE.Group {
-    const group = new THREE.Group();
-    const cyl = Math.max(0.04, capsuleHalf(length, radius) * 2);
-    const geo = this.geo(`cap-${length}-${radius}`, () => new THREE.CapsuleGeometry(radius, cyl, 6, 12));
-    group.add(this.mesh(geo, material, cast));
-    const cuff = this.mesh(this.geo("cuff", () => new THREE.SphereGeometry(radius * 1.15, 12, 10)), joint, cast);
-    cuff.position.y = length / 2;
+    if (part.shape === "box") {
+      const mat =
+        role === "core" || role === "head"
+          ? mats.armor
+          : role === "foot"
+            ? mats.sole
+            : mats.dark;
+      const mesh = this.mesh(
+        this.box((part.hx ?? 0.1) * 2, (part.hy ?? 0.1) * 2, (part.hz ?? 0.1) * 2),
+        mat,
+        cast
+      );
+      group.add(mesh);
+      if (role === "core") {
+        const stripe = this.mesh(
+          this.box((part.hx ?? 0.1) * 1.05, 0.02, (part.hz ?? 0.1) * 2.05),
+          mats.accent,
+          false
+        );
+        stripe.position.y = (part.hy ?? 0.1) + 0.01;
+        group.add(stripe);
+      }
+      if (role === "foot") {
+        const stripe = this.mesh(
+          this.box((part.hx ?? 0.1) * 1.1, 0.012, (part.hz ?? 0.1) * 2.05),
+          mats.accent,
+          false
+        );
+        stripe.position.y = (part.hy ?? 0.05) + 0.004;
+        group.add(stripe);
+      }
+      if (role === "head") {
+        const eye = this.mesh(this.geo("eye", () => new THREE.SphereGeometry(0.04, 10, 8)), mats.visor, false);
+        eye.position.set((part.hx ?? 0.1) * 0.9, (part.hy ?? 0.1) * 0.2, 0);
+        group.add(eye);
+      }
+      return group;
+    }
+
+    if (part.shape === "ball") {
+      const r = part.radius ?? 0.1;
+      const mat =
+        role === "blob"
+          ? mats.blobMat
+          : role === "head"
+            ? mats.armor
+            : role === "foot"
+              ? mats.sole
+              : mats.armor;
+      group.add(this.mesh(this.geo(`ball-${r.toFixed(3)}`, () => new THREE.SphereGeometry(r, 22, 16)), mat, cast));
+      if (role === "head") {
+        const visorMesh = this.mesh(this.box(0.05, 0.06, r * 1.1), mats.visor, false);
+        visorMesh.position.set(r * 0.72, 0.02, 0);
+        group.add(visorMesh);
+      }
+      if (role === "blob") {
+        const spot = this.mesh(
+          this.geo(`blobspot-${(r * 0.35).toFixed(3)}`, () => new THREE.SphereGeometry(r * 0.28, 10, 8)),
+          mats.visor,
+          false
+        );
+        spot.position.set(r * 0.55, r * 0.25, 0);
+        group.add(spot);
+      }
+      if (role === "foot") {
+        const ring = this.mesh(
+          this.geo(`footring-${r.toFixed(3)}`, () => new THREE.TorusGeometry(r * 0.7, 0.012, 6, 14)),
+          mats.accent,
+          false
+        );
+        ring.rotation.x = Math.PI / 2;
+        ring.position.y = -r * 0.15;
+        group.add(ring);
+      }
+      return group;
+    }
+
+    if (part.shape === "cylinder") {
+      const r = part.radius ?? 0.1;
+      const h = part.length ?? r * 2;
+      const mat = role === "wheel" ? mats.dark : mats.armor;
+      const cyl = this.mesh(
+        this.geo(`cyl-${r.toFixed(3)}-${h.toFixed(3)}`, () => new THREE.CylinderGeometry(r, r, h, 18)),
+        mat,
+        cast
+      );
+      group.add(cyl);
+      if (role === "wheel") {
+        const hub = this.mesh(
+          this.geo(`hub-${(r * 0.35).toFixed(3)}`, () => new THREE.CylinderGeometry(r * 0.28, r * 0.28, h * 1.08, 12)),
+          mats.accent,
+          false
+        );
+        group.add(hub);
+        const rim = this.mesh(
+          this.geo(`rim-${r.toFixed(3)}`, () => new THREE.TorusGeometry(r * 0.82, 0.02, 6, 18)),
+          mats.visor,
+          false
+        );
+        rim.rotation.x = Math.PI / 2;
+        group.add(rim);
+      }
+      if (role === "core") {
+        const belt = this.mesh(
+          this.geo(`belt-${r.toFixed(3)}`, () => new THREE.TorusGeometry(r * 0.9, 0.018, 8, 18)),
+          mats.accent,
+          false
+        );
+        belt.rotation.x = Math.PI / 2;
+        group.add(belt);
+      }
+      return group;
+    }
+
+    // Capsule limb / segment.
+    const r = part.radius ?? 0.05;
+    const len = part.length ?? 0.3;
+    const mat = role === "segment" ? mats.armor : role === "head" ? mats.armor : mats.dark;
+    const cyl = Math.max(0.04, capsuleHalf(len, r) * 2);
+    const geo = this.geo(`cap-${len.toFixed(3)}-${r.toFixed(3)}`, () => new THREE.CapsuleGeometry(r, cyl, 6, 12));
+    group.add(this.mesh(geo, mat, cast));
+    const cuff = this.mesh(
+      this.geo(`cuff-${(r * 1.15).toFixed(3)}`, () => new THREE.SphereGeometry(r * 1.15, 12, 10)),
+      mats.joint,
+      cast
+    );
+    cuff.position.y = len / 2;
     group.add(cuff);
-    if (hand) {
-      const palm = this.mesh(this.geo("hand", () => new THREE.SphereGeometry(radius * 1.25, 12, 10)), material, false);
-      palm.position.y = -length / 2 - radius * 0.4;
-      group.add(palm);
+    if (role === "head") {
+      const eye = this.mesh(this.geo("eye", () => new THREE.SphereGeometry(r * 0.45, 10, 8)), mats.visor, false);
+      eye.position.set(r * 0.7, 0, 0);
+      group.add(eye);
     }
     return group;
   }

@@ -1,7 +1,7 @@
 {
   "name": "robotcourse",
   "version": "1.0.0",
-  "description": "A 3D genetic-algorithm obstacle course for humanoid robots under gravity.",
+  "description": "A 3D genetic-algorithm obstacle course for robots of any shape under gravity.",
   "type": "module",
   "private": true,
   "scripts": {

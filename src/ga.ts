@@ -1,4 +1,13 @@
-import { buildMorph, crawlBlend, LIMIT, type Morph, type Pose } from "./body";
+import {
+  applyExpression,
+  buildMorph,
+  crawlBlend,
+  formCenter,
+  formFromGene,
+  type FormKind,
+  type Morph,
+  type Pose
+} from "./body";
 import { GEN_TIME } from "./course";
 
 /**
@@ -40,8 +49,8 @@ export interface GeneSpec {
 }
 
 /**
- * Broader ranges so lineages can specialize: tall vs stocky, slow striders vs
- * fast steppers, stiff vs floppy, biped vs crawl, hoppers vs walkers.
+ * Broader ranges so lineages can specialize across topologies: bipeds, quads,
+ * spiders, snakes, blobs, wheeled chassis, centipedes — plus gait and size.
  */
 export const GENES: readonly GeneSpec[] = [
   { name: "freq", min: 1.6, max: 6.8 },
@@ -64,10 +73,14 @@ export const GENES: readonly GeneSpec[] = [
   { name: "kneeFlex", min: 0, max: 1 },
   // Negative is no jump. Only a positive amplitude can leave the ground on purpose.
   { name: "jump", min: -1, max: 1 },
-  // 0 stands. 1 is a low all-fours crawl. Bred and mutated with the rest.
+  // 0 stands. 1 is a low all-fours crawl on bipeds.
   { name: "quad", min: 0, max: 1 },
-  // How hard arms counter-swing (biped) or drive the crawl (quad).
-  { name: "armDrive", min: 0, max: 1 }
+  // How hard arms / front limbs drive.
+  { name: "armDrive", min: 0, max: 1 },
+  // Topology. Inherited whole so shapes stay crisp.
+  { name: "form", min: 0, max: 1 },
+  // Segment / lobe / wheel / leg-count nuance within a form.
+  { name: "segments", min: 0, max: 1 }
 ];
 
 export type Decoded = Record<string, number>;
@@ -127,7 +140,9 @@ export const PROTO: Decoded = {
   kneeFlex: 0.42,
   jump: 0,
   quad: 0,
-  armDrive: 0.45
+  armDrive: 0.45,
+  form: formCenter("biped"),
+  segments: 0.45
 };
 
 export type Rng = () => number;
@@ -171,12 +186,12 @@ export function decode(genes: readonly number[]): Decoded {
 }
 
 /**
- * Sizes and joint limits implied by a decoded genome. Missing shape genes use PROTO.
- * hipFlex, kneeFlex, and jump are multiplied by the HUD scales here, not written back
- * into the genome.
+ * Sizes, topology, and joint limits implied by a decoded genome.
+ * hipFlex, kneeFlex, and jump are multiplied by the HUD scales here.
  */
-export function morphFromDecoded(decoded: Decoded): Morph {
+export function morphFromDecoded(decoded: Decoded, spawnX = 0, spawnZ = 0): Morph {
   return buildMorph({
+    form: decoded.form ?? PROTO.form ?? formCenter("biped"),
     leg: decoded.leg ?? PROTO.leg ?? 1,
     torsoH: decoded.torsoH ?? PROTO.torsoH ?? 1,
     torsoW: decoded.torsoW ?? PROTO.torsoW ?? 1,
@@ -184,15 +199,35 @@ export function morphFromDecoded(decoded: Decoded): Morph {
     hipFlex: (decoded.hipFlex ?? PROTO.hipFlex ?? 0.55) * flexScale,
     kneeFlex: (decoded.kneeFlex ?? PROTO.kneeFlex ?? 0.42) * flexScale,
     jump: (decoded.jump ?? 0) * jumpScale,
-    quad: decoded.quad ?? PROTO.quad ?? 0
+    quad: decoded.quad ?? PROTO.quad ?? 0,
+    segments: decoded.segments ?? PROTO.segments ?? 0.45,
+    spawnX,
+    spawnZ
   });
+}
+
+/** Refresh joint limits / jump on a live morph after slider changes. */
+export function refreshMorphExpression(morph: Morph, decoded: Decoded): void {
+  applyExpression(
+    morph,
+    (decoded.hipFlex ?? 0.55) * flexScale,
+    (decoded.kneeFlex ?? 0.42) * flexScale,
+    (decoded.jump ?? 0) * jumpScale
+  );
 }
 
 export function encode(decoded: Decoded): number[] {
   return GENES.map((spec) => {
-    // Missing quad stays bipedal. Other gaps use the middle of the range.
     const fallback =
-      spec.name === "quad" ? 0 : spec.name === "armDrive" ? 0.45 : (spec.min + spec.max) / 2;
+      spec.name === "quad"
+        ? 0
+        : spec.name === "armDrive"
+          ? 0.45
+          : spec.name === "form"
+            ? formCenter("biped")
+            : spec.name === "segments"
+              ? 0.45
+              : (spec.min + spec.max) / 2;
     const value = decoded[spec.name] ?? fallback;
     return clamp01((value - spec.min) / (spec.max - spec.min));
   });
@@ -217,16 +252,20 @@ function unitJitter(rng: Rng, center: number, spread = 0.1): number {
   return clamp01(center + jitter(rng, spread));
 }
 
-/** Named starting strategies. Noise is applied so no two clones look identical. */
+/** Named starting strategies across topologies. */
 type Archetype =
   | "tallBiped"
   | "stocky"
   | "strider"
   | "crawler"
   | "jumper"
+  | "quadWalker"
+  | "spider"
+  | "snake"
+  | "blob"
+  | "wheeler"
+  | "centipede"
   | "flexy"
-  | "stiff"
-  | "armAssist"
   | "galloper"
   | "leaner";
 
@@ -236,20 +275,31 @@ const ARCHETYPES: readonly Archetype[] = [
   "strider",
   "crawler",
   "jumper",
+  "quadWalker",
+  "spider",
+  "snake",
+  "blob",
+  "wheeler",
+  "centipede",
   "flexy",
-  "stiff",
-  "armAssist",
   "galloper",
   "leaner"
 ];
 
+function formSpan(kind: FormKind, rng: Rng): number {
+  const i = Math.max(0, ["biped", "quad", "spider", "snake", "blob", "wheeler", "centipede"].indexOf(kind));
+  const lo = i / 7;
+  const hi = (i + 1) / 7;
+  return lo + rng() * (hi - lo) * 0.92 + 0.04 * (hi - lo);
+}
+
 function archetypeGenome(kind: Archetype, rng: Rng): number[] {
   const decoded: Decoded = {};
-  // Full-range baseline, then overwrite the strategy-defining genes.
   for (const spec of GENES) decoded[spec.name] = spec.min + rng() * (spec.max - spec.min);
 
   switch (kind) {
     case "tallBiped":
+      decoded.form = formSpan("biped", rng);
       decoded.leg = span("leg", 0.78 + rng() * 0.22);
       decoded.torsoH = span("torsoH", 0.7 + rng() * 0.28);
       decoded.torsoW = span("torsoW", 0.25 + rng() * 0.35);
@@ -265,8 +315,10 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
       decoded.kneeFlex = unitJitter(rng, 0.4, 0.18);
       decoded.armDrive = unitJitter(rng, 0.4, 0.2);
       decoded.split = span("split", 0.7 + rng() * 0.3);
+      decoded.segments = unitJitter(rng, 0.4, 0.2);
       break;
     case "stocky":
+      decoded.form = formSpan("biped", rng);
       decoded.leg = span("leg", 0.05 + rng() * 0.28);
       decoded.torsoH = span("torsoH", 0.15 + rng() * 0.35);
       decoded.torsoW = span("torsoW", 0.7 + rng() * 0.3);
@@ -276,13 +328,13 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
       decoded.freq = span("freq", 0.45 + rng() * 0.4);
       decoded.hipAmp = span("hipAmp", 0.3 + rng() * 0.4);
       decoded.kneeAmp = span("kneeAmp", 0.25 + rng() * 0.4);
-      decoded.armAmp = span("armAmp", 0.15 + rng() * 0.35);
-      decoded.lean = span("lean", 0.2 + rng() * 0.35);
       decoded.hipFlex = unitJitter(rng, 0.28, 0.15);
       decoded.kneeFlex = unitJitter(rng, 0.22, 0.15);
       decoded.armDrive = unitJitter(rng, 0.3, 0.2);
+      decoded.segments = unitJitter(rng, 0.35, 0.2);
       break;
     case "strider":
+      decoded.form = formSpan("biped", rng);
       decoded.leg = span("leg", 0.72 + rng() * 0.28);
       decoded.torsoH = span("torsoH", 0.45 + rng() * 0.35);
       decoded.torsoW = span("torsoW", 0.3 + rng() * 0.35);
@@ -293,14 +345,15 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
       decoded.hipAmp = span("hipAmp", 0.72 + rng() * 0.28);
       decoded.hipBias = span("hipBias", 0.45 + rng() * 0.4);
       decoded.kneeAmp = span("kneeAmp", 0.65 + rng() * 0.35);
-      decoded.armAmp = span("armAmp", 0.45 + rng() * 0.4);
       decoded.lean = span("lean", 0.45 + rng() * 0.4);
       decoded.hipFlex = unitJitter(rng, 0.62, 0.18);
       decoded.kneeFlex = unitJitter(rng, 0.55, 0.18);
       decoded.armDrive = unitJitter(rng, 0.55, 0.2);
       decoded.split = span("split", 0.85 + rng() * 0.15);
+      decoded.segments = unitJitter(rng, 0.4, 0.2);
       break;
     case "crawler":
+      decoded.form = formSpan("biped", rng);
       decoded.leg = span("leg", 0.2 + rng() * 0.45);
       decoded.torsoH = span("torsoH", 0.1 + rng() * 0.35);
       decoded.torsoW = span("torsoW", 0.45 + rng() * 0.4);
@@ -311,14 +364,13 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
       decoded.hipAmp = span("hipAmp", 0.4 + rng() * 0.45);
       decoded.kneeAmp = span("kneeAmp", 0.35 + rng() * 0.45);
       decoded.armAmp = span("armAmp", 0.55 + rng() * 0.45);
-      decoded.elbow = span("elbow", 0.45 + rng() * 0.45);
-      decoded.lean = span("lean", 0.15 + rng() * 0.35);
       decoded.hipFlex = Math.max(0.66, unitJitter(rng, 0.85, 0.12));
       decoded.kneeFlex = Math.max(0.6, unitJitter(rng, 0.8, 0.15));
       decoded.armDrive = unitJitter(rng, 0.85, 0.12);
-      decoded.split = span("split", 0.55 + rng() * 0.45);
+      decoded.segments = unitJitter(rng, 0.45, 0.2);
       break;
     case "jumper":
+      decoded.form = formSpan(rng() < 0.55 ? "biped" : "quad", rng);
       decoded.leg = span("leg", 0.35 + rng() * 0.4);
       decoded.torsoH = span("torsoH", 0.35 + rng() * 0.4);
       decoded.torsoW = span("torsoW", 0.4 + rng() * 0.4);
@@ -329,13 +381,112 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
       decoded.hipAmp = span("hipAmp", 0.35 + rng() * 0.4);
       decoded.kneeAmp = span("kneeAmp", 0.45 + rng() * 0.4);
       decoded.kneeStance = span("kneeStance", 0.35 + rng() * 0.5);
-      decoded.armAmp = span("armAmp", 0.2 + rng() * 0.4);
-      decoded.lean = span("lean", 0.25 + rng() * 0.4);
       decoded.hipFlex = unitJitter(rng, 0.7, 0.18);
       decoded.kneeFlex = unitJitter(rng, 0.72, 0.18);
       decoded.armDrive = unitJitter(rng, 0.4, 0.2);
+      decoded.segments = unitJitter(rng, 0.4, 0.25);
+      break;
+    case "quadWalker":
+      decoded.form = formSpan("quad", rng);
+      decoded.leg = span("leg", 0.35 + rng() * 0.45);
+      decoded.torsoH = span("torsoH", 0.35 + rng() * 0.4);
+      decoded.torsoW = span("torsoW", 0.4 + rng() * 0.45);
+      decoded.arm = span("arm", 0.3 + rng() * 0.35);
+      decoded.quad = 0.2 + rng() * 0.4;
+      decoded.jump = -0.35 + rng() * 0.6;
+      decoded.freq = span("freq", 0.4 + rng() * 0.4);
+      decoded.hipAmp = span("hipAmp", 0.5 + rng() * 0.4);
+      decoded.kneeAmp = span("kneeAmp", 0.45 + rng() * 0.4);
+      decoded.hipFlex = unitJitter(rng, 0.6, 0.2);
+      decoded.kneeFlex = unitJitter(rng, 0.55, 0.2);
+      decoded.armDrive = unitJitter(rng, 0.5, 0.2);
+      decoded.split = span("split", 0.6 + rng() * 0.4);
+      decoded.segments = unitJitter(rng, 0.4, 0.2);
+      break;
+    case "spider":
+      decoded.form = formSpan("spider", rng);
+      decoded.leg = span("leg", 0.4 + rng() * 0.45);
+      decoded.torsoH = span("torsoH", 0.25 + rng() * 0.4);
+      decoded.torsoW = span("torsoW", 0.45 + rng() * 0.45);
+      decoded.arm = span("arm", 0.35 + rng() * 0.4);
+      decoded.quad = rng() * 0.3;
+      decoded.jump = -0.2 + rng() * 0.7;
+      decoded.freq = span("freq", 0.45 + rng() * 0.4);
+      decoded.hipAmp = span("hipAmp", 0.45 + rng() * 0.45);
+      decoded.kneeAmp = span("kneeAmp", 0.4 + rng() * 0.45);
+      decoded.hipFlex = unitJitter(rng, 0.7, 0.2);
+      decoded.kneeFlex = unitJitter(rng, 0.65, 0.2);
+      decoded.armDrive = unitJitter(rng, 0.55, 0.25);
+      decoded.segments = rng() < 0.5 ? unitJitter(rng, 0.25, 0.15) : unitJitter(rng, 0.75, 0.15);
+      break;
+    case "snake":
+      decoded.form = formSpan("snake", rng);
+      decoded.leg = span("leg", 0.2 + rng() * 0.35);
+      decoded.torsoH = span("torsoH", 0.35 + rng() * 0.45);
+      decoded.torsoW = span("torsoW", 0.25 + rng() * 0.4);
+      decoded.arm = span("arm", 0.3 + rng() * 0.35);
+      decoded.quad = rng() * 0.2;
+      decoded.jump = -0.7 + rng() * 0.5;
+      decoded.freq = span("freq", 0.5 + rng() * 0.45);
+      decoded.hipAmp = span("hipAmp", 0.55 + rng() * 0.4);
+      decoded.kneeAmp = span("kneeAmp", 0.3 + rng() * 0.4);
+      decoded.lean = span("lean", 0.3 + rng() * 0.45);
+      decoded.hipFlex = unitJitter(rng, 0.75, 0.15);
+      decoded.kneeFlex = unitJitter(rng, 0.5, 0.2);
+      decoded.armDrive = unitJitter(rng, 0.4, 0.2);
+      decoded.segments = unitJitter(rng, 0.55, 0.3);
+      break;
+    case "blob":
+      decoded.form = formSpan("blob", rng);
+      decoded.leg = span("leg", 0.25 + rng() * 0.4);
+      decoded.torsoH = span("torsoH", 0.4 + rng() * 0.45);
+      decoded.torsoW = span("torsoW", 0.55 + rng() * 0.4);
+      decoded.arm = span("arm", 0.45 + rng() * 0.45);
+      decoded.quad = rng() * 0.25;
+      decoded.jump = -0.15 + rng() * 0.8;
+      decoded.freq = span("freq", 0.35 + rng() * 0.45);
+      decoded.hipAmp = span("hipAmp", 0.4 + rng() * 0.45);
+      decoded.kneeAmp = span("kneeAmp", 0.35 + rng() * 0.4);
+      decoded.hipFlex = unitJitter(rng, 0.65, 0.2);
+      decoded.kneeFlex = unitJitter(rng, 0.55, 0.2);
+      decoded.armDrive = unitJitter(rng, 0.5, 0.25);
+      decoded.segments = unitJitter(rng, 0.5, 0.35);
+      break;
+    case "wheeler":
+      decoded.form = formSpan("wheeler", rng);
+      decoded.leg = span("leg", 0.3 + rng() * 0.4);
+      decoded.torsoH = span("torsoH", 0.35 + rng() * 0.4);
+      decoded.torsoW = span("torsoW", 0.4 + rng() * 0.45);
+      decoded.arm = span("arm", 0.3 + rng() * 0.35);
+      decoded.quad = rng() * 0.15;
+      decoded.jump = -0.55 + rng() * 0.55;
+      decoded.freq = span("freq", 0.55 + rng() * 0.4);
+      decoded.hipAmp = span("hipAmp", 0.35 + rng() * 0.4);
+      decoded.kneeAmp = span("kneeAmp", 0.25 + rng() * 0.35);
+      decoded.toe = span("toe", 0.55 + rng() * 0.4);
+      decoded.hipFlex = unitJitter(rng, 0.45, 0.2);
+      decoded.kneeFlex = unitJitter(rng, 0.4, 0.2);
+      decoded.armDrive = unitJitter(rng, 0.35, 0.2);
+      decoded.segments = rng() < 0.33 ? unitJitter(rng, 0.2, 0.12) : rng() < 0.66 ? unitJitter(rng, 0.55, 0.12) : unitJitter(rng, 0.85, 0.1);
+      break;
+    case "centipede":
+      decoded.form = formSpan("centipede", rng);
+      decoded.leg = span("leg", 0.25 + rng() * 0.4);
+      decoded.torsoH = span("torsoH", 0.3 + rng() * 0.4);
+      decoded.torsoW = span("torsoW", 0.3 + rng() * 0.4);
+      decoded.arm = span("arm", 0.3 + rng() * 0.35);
+      decoded.quad = rng() * 0.25;
+      decoded.jump = -0.45 + rng() * 0.55;
+      decoded.freq = span("freq", 0.55 + rng() * 0.4);
+      decoded.hipAmp = span("hipAmp", 0.45 + rng() * 0.4);
+      decoded.kneeAmp = span("kneeAmp", 0.4 + rng() * 0.4);
+      decoded.hipFlex = unitJitter(rng, 0.65, 0.2);
+      decoded.kneeFlex = unitJitter(rng, 0.6, 0.2);
+      decoded.armDrive = unitJitter(rng, 0.45, 0.2);
+      decoded.segments = unitJitter(rng, 0.55, 0.3);
       break;
     case "flexy":
+      decoded.form = formSpan(rng() < 0.4 ? "biped" : rng() < 0.7 ? "snake" : "blob", rng);
       decoded.leg = span("leg", 0.35 + rng() * 0.45);
       decoded.torsoH = span("torsoH", 0.35 + rng() * 0.45);
       decoded.torsoW = span("torsoW", 0.3 + rng() * 0.45);
@@ -345,46 +496,13 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
       decoded.freq = span("freq", 0.4 + rng() * 0.45);
       decoded.hipAmp = span("hipAmp", 0.6 + rng() * 0.4);
       decoded.kneeAmp = span("kneeAmp", 0.55 + rng() * 0.45);
-      decoded.armAmp = span("armAmp", 0.5 + rng() * 0.5);
-      decoded.lean = span("lean", 0.3 + rng() * 0.5);
       decoded.hipFlex = unitJitter(rng, 0.9, 0.1);
       decoded.kneeFlex = unitJitter(rng, 0.88, 0.12);
       decoded.armDrive = unitJitter(rng, 0.65, 0.2);
-      break;
-    case "stiff":
-      decoded.leg = span("leg", 0.4 + rng() * 0.4);
-      decoded.torsoH = span("torsoH", 0.45 + rng() * 0.35);
-      decoded.torsoW = span("torsoW", 0.4 + rng() * 0.4);
-      decoded.arm = span("arm", 0.35 + rng() * 0.35);
-      decoded.quad = rng() * 0.1;
-      decoded.jump = -0.8 + rng() * 0.4;
-      decoded.freq = span("freq", 0.25 + rng() * 0.35);
-      decoded.hipAmp = span("hipAmp", 0.2 + rng() * 0.35);
-      decoded.kneeAmp = span("kneeAmp", 0.15 + rng() * 0.3);
-      decoded.armAmp = span("armAmp", 0.1 + rng() * 0.3);
-      decoded.lean = span("lean", 0.35 + rng() * 0.3);
-      decoded.hipFlex = unitJitter(rng, 0.12, 0.1);
-      decoded.kneeFlex = unitJitter(rng, 0.1, 0.1);
-      decoded.armDrive = unitJitter(rng, 0.2, 0.15);
-      break;
-    case "armAssist":
-      decoded.leg = span("leg", 0.4 + rng() * 0.4);
-      decoded.torsoH = span("torsoH", 0.4 + rng() * 0.4);
-      decoded.torsoW = span("torsoW", 0.35 + rng() * 0.4);
-      decoded.arm = span("arm", 0.7 + rng() * 0.3);
-      decoded.quad = 0.15 + rng() * 0.35;
-      decoded.jump = -0.35 + rng() * 0.55;
-      decoded.freq = span("freq", 0.35 + rng() * 0.4);
-      decoded.hipAmp = span("hipAmp", 0.4 + rng() * 0.4);
-      decoded.kneeAmp = span("kneeAmp", 0.35 + rng() * 0.4);
-      decoded.armAmp = span("armAmp", 0.7 + rng() * 0.3);
-      decoded.elbow = span("elbow", 0.35 + rng() * 0.5);
-      decoded.lean = span("lean", 0.4 + rng() * 0.45);
-      decoded.hipFlex = unitJitter(rng, 0.55, 0.2);
-      decoded.kneeFlex = unitJitter(rng, 0.5, 0.2);
-      decoded.armDrive = unitJitter(rng, 0.9, 0.1);
+      decoded.segments = unitJitter(rng, 0.5, 0.3);
       break;
     case "galloper":
+      decoded.form = formSpan(rng() < 0.55 ? "quad" : "biped", rng);
       decoded.leg = span("leg", 0.45 + rng() * 0.4);
       decoded.torsoH = span("torsoH", 0.4 + rng() * 0.4);
       decoded.torsoW = span("torsoW", 0.35 + rng() * 0.4);
@@ -394,14 +512,14 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
       decoded.freq = span("freq", 0.72 + rng() * 0.28);
       decoded.hipAmp = span("hipAmp", 0.55 + rng() * 0.45);
       decoded.kneeAmp = span("kneeAmp", 0.5 + rng() * 0.45);
-      decoded.armAmp = span("armAmp", 0.4 + rng() * 0.45);
-      decoded.lean = span("lean", 0.4 + rng() * 0.45);
       decoded.hipFlex = unitJitter(rng, 0.65, 0.2);
       decoded.kneeFlex = unitJitter(rng, 0.6, 0.2);
       decoded.armDrive = unitJitter(rng, 0.55, 0.25);
       decoded.split = span("split", 0.5 + rng() * 0.5);
+      decoded.segments = unitJitter(rng, 0.4, 0.25);
       break;
     case "leaner":
+      decoded.form = formSpan("biped", rng);
       decoded.leg = span("leg", 0.45 + rng() * 0.4);
       decoded.torsoH = span("torsoH", 0.55 + rng() * 0.4);
       decoded.torsoW = span("torsoW", 0.25 + rng() * 0.4);
@@ -412,15 +530,14 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
       decoded.hipAmp = span("hipAmp", 0.5 + rng() * 0.4);
       decoded.hipBias = span("hipBias", 0.55 + rng() * 0.4);
       decoded.kneeAmp = span("kneeAmp", 0.4 + rng() * 0.4);
-      decoded.armAmp = span("armAmp", 0.35 + rng() * 0.4);
       decoded.lean = span("lean", 0.75 + rng() * 0.25);
       decoded.hipFlex = unitJitter(rng, 0.55, 0.2);
       decoded.kneeFlex = unitJitter(rng, 0.45, 0.2);
       decoded.armDrive = unitJitter(rng, 0.5, 0.2);
+      decoded.segments = unitJitter(rng, 0.4, 0.2);
       break;
   }
 
-  // Soft noise so archetypes stay recognizable but never identical.
   decoded.toe = span("toe", clamp01(0.4 + jitter(rng, 0.35)));
   decoded.turn = span("turn", clamp01(0.5 + jitter(rng, 0.25)));
   decoded.kneePhase = span("kneePhase", clamp01(0.5 + jitter(rng, 0.35)));
@@ -428,14 +545,13 @@ function archetypeGenome(kind: Archetype, rng: Rng): number[] {
   if (decoded.hipBias === undefined) decoded.hipBias = span("hipBias", 0.35 + rng() * 0.4);
   if (decoded.elbow === undefined) decoded.elbow = span("elbow", 0.3 + rng() * 0.5);
   if (decoded.split === undefined) decoded.split = span("split", 0.55 + rng() * 0.45);
+  if (decoded.armAmp === undefined) decoded.armAmp = span("armAmp", 0.25 + rng() * 0.5);
 
   return encode(decoded);
 }
 
 /**
- * Generation 0 is a round-robin of clearly different strategies — tall bipeds,
- * stocky walkers, long-legged striders, crawlers, jumpers, stiff vs flexible,
- * arm-driven, gallopers, lean-heavy — with noise so each slot looks unique.
+ * Generation 0 is a round-robin of clearly different body plans and strategies.
  */
 export function initialPopulation(pop: number, rng: Rng): number[][] {
   const order = ARCHETYPES.slice();
@@ -462,7 +578,7 @@ function tournament(ranked: readonly number[][], rng: Rng): number[] {
   return ranked[best] ?? ranked[0] ?? randomGenome(rng);
 }
 
-/** Body/posture genes. Milder mutation so winners' shapes breed true. */
+/** Body/topology genes. Milder mutation so winners' shapes breed true. */
 const SHAPE_GENES = new Set([
   "leg",
   "torsoH",
@@ -472,7 +588,9 @@ const SHAPE_GENES = new Set([
   "kneeFlex",
   "jump",
   "quad",
-  "armDrive"
+  "armDrive",
+  "form",
+  "segments"
 ]);
 
 function crossover(a: readonly number[], b: readonly number[], rng: Rng): number[] {
@@ -484,8 +602,11 @@ function crossover(a: readonly number[], b: readonly number[], rng: Rng): number
     const name = GENES[i]?.name;
     const shape = name !== undefined && SHAPE_GENES.has(name);
     const roll = rng();
-    // Shape: usually inherit one parent's proportions whole so morphs stay crisp.
-    // Gait: blend more often.
+    // Form almost always copies whole from one parent so topologies stay crisp.
+    if (name === "form") {
+      child.push(roll < 0.5 ? gene : other);
+      continue;
+    }
     if (shape) {
       if (roll < 0.12) child.push((gene + other) * 0.5);
       else if (roll < 0.62) child.push(gene);
@@ -502,10 +623,20 @@ function crossover(a: readonly number[], b: readonly number[], rng: Rng): number
 }
 
 function mutate(genes: readonly number[], rng: Rng): number[] {
-  // Gait stays lively. Shape genes move less so fitness clearly reshapes the lineup.
   return genes.map((gene, i) => {
     const name = GENES[i]?.name;
     const shape = name !== undefined && SHAPE_GENES.has(name);
+    // Form mutates rarely: flip to a neighbor topology or stay put.
+    if (name === "form") {
+      if (rng() > 0.08) return gene;
+      if (rng() < 0.55) {
+        const kind = formFromGene(gene);
+        const idx = Math.max(0, ["biped", "quad", "spider", "snake", "blob", "wheeler", "centipede"].indexOf(kind));
+        const next = clamp(idx + (rng() < 0.5 ? -1 : 1), 0, 6);
+        return (next + 0.5) / 7;
+      }
+      return rng();
+    }
     const rate = shape ? 0.2 : 0.34;
     if (rng() > rate) return gene;
     const sigma = shape
@@ -525,15 +656,12 @@ function mutate(genes: readonly number[], rng: Rng): number[] {
 
 /**
  * `parents` must already be sorted best-first. Returns a new population of genomes.
- * Elites are copied whole (every body and gait gene). Children blend two parents
- * then mutate — shape genes softer than gait — so successful morphs visibly take
- * over. A thin immigrant trickle (at most one) keeps a little diversity without
- * washing out winners.
+ * Elites are copied whole. Children blend two parents then mutate — shape genes
+ * softer than gait — so successful morphs visibly take over.
  */
 export function breed(parents: readonly number[][], pop: number, rng: Rng): number[][] {
   if (parents.length === 0) return initialPopulation(pop, rng);
   const eliteN = Math.max(2, Math.round(pop * 0.2));
-  // One immigrant at most. Success, not random archetypes, drives shape change.
   const immigrants = pop >= 14 ? 1 : 0;
   const out: number[][] = [];
   for (let i = 0; i < eliteN && i < parents.length; i++) {
@@ -577,13 +705,17 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-export function writePose(
-  decoded: Decoded,
-  time: number,
-  out: Pose,
-  limits: Morph["limits"] = LIMIT,
-  crouch = 0
-): void {
+function wave(phase: number): number {
+  return Math.sin(phase * Math.PI * 2);
+}
+
+/**
+ * Write motor targets for every joint on this morph from gait genes.
+ * Topology-aware: biped crawl blend, multi-leg phases, snake undulation,
+ * blob wobble, wheel spin, centipede ripple.
+ */
+export function writePose(decoded: Decoded, time: number, out: Pose, morph: Morph): void {
+  for (const key of Object.keys(out)) out[key] = 0;
   const freq = Math.max(0.25, decoded.freq ?? 3.8);
   const split = decoded.split ?? 1;
   const cycle = time * freq;
@@ -596,104 +728,128 @@ export function writePose(
   const elbow = decoded.elbow ?? 0.55;
   const toe = decoded.toe ?? 0;
   const armDrive = clamp01(decoded.armDrive ?? 0.45);
-  const crawl = crawlBlend(decoded.quad ?? 0);
-  const fold = Math.max(0, Math.min(1, crouch)) * (1 - crawl);
-  const left = legStep(
-    cycle,
-    hipAmp * (1 - 0.78 * fold),
-    hipBias * (1 - 0.7 * fold),
-    kneeAmp * (1 - fold),
-    stance
-  );
-  const right = legStep(
-    cycle + 0.5 * split,
-    hipAmp * (1 - 0.78 * fold),
-    hipBias * (1 - 0.7 * fold),
-    kneeAmp * (1 - fold),
-    stance
-  );
-  const armPhase = cycle * Math.PI * 2;
+  const lean = decoded.lean ?? 0;
+  const crouch = morph.crouch;
+  const fold = Math.max(0, Math.min(1, crouch));
   const ramp = Math.min(1, time / 1.05);
-  const kneeCrouch = fold * 1.05 * ramp;
-  const hipCrouch = fold * 0.32 * ramp;
+  const limits = morph.limits;
 
-  const phaseL = ((cycle % 1) + 1) % 1;
-  const phaseR = ((cycle + 0.5 * split) % 1 + 1) % 1;
-  const wave = (phase: number): number => Math.sin(phase * Math.PI * 2);
-  // Stronger floors so legs and arms visibly animate even on modest genes.
-  const hipSwing = Math.max(0.32, Math.min(0.72, hipAmp * 0.55));
-  const kneeSwing = Math.max(0.18, Math.min(0.55, kneeAmp * 0.32));
-  const armSwing = Math.max(0.28, Math.min(0.75, armAmp * (0.55 + 0.7 * armDrive)));
-  const hipBase = clamp(1.05, limits.hip[0] + 0.04, limits.hip[1] - 0.05);
-  const kneeBase = clamp(1.48, limits.knee[0], limits.knee[1] - 0.05);
-  const shBase = clamp(1.05, limits.shoulder[0] + 0.04, limits.shoulder[1] - 0.08);
-  const elBase = clamp(1.2, limits.elbow[0], limits.elbow[1] - 0.05);
-  const mix = (stand: number, low: number, lo: number, hi: number): number =>
-    clamp(lerp(stand, low, crawl), lo, hi);
+  const set = (key: string, value: number, limName: string): void => {
+    const lim = limits[limName] ?? limits.hip ?? [-1, 1];
+    out[key] = clamp(value, lim[0], lim[1]);
+  };
 
-  const bipedArm = armAmp * (0.55 + 0.9 * armDrive);
-  const elbowPump = elbow * (0.7 + 0.55 * armDrive);
+  if (morph.form === "biped") {
+    const crawl = crawlBlend(decoded.quad ?? 0);
+    const left = legStep(cycle, hipAmp * (1 - 0.78 * fold * (1 - crawl)), hipBias * (1 - 0.7 * fold), kneeAmp * (1 - fold * (1 - crawl)), stance);
+    const right = legStep(cycle + 0.5 * split, hipAmp * (1 - 0.78 * fold * (1 - crawl)), hipBias * (1 - 0.7 * fold), kneeAmp * (1 - fold * (1 - crawl)), stance);
+    const armPhase = cycle * Math.PI * 2;
+    const phaseL = ((cycle % 1) + 1) % 1;
+    const phaseR = ((cycle + 0.5 * split) % 1 + 1) % 1;
+    const hipSwing = Math.max(0.32, Math.min(0.72, hipAmp * 0.55));
+    const kneeSwing = Math.max(0.18, Math.min(0.55, kneeAmp * 0.32));
+    const armSwing = Math.max(0.28, Math.min(0.75, armAmp * (0.55 + 0.7 * armDrive)));
+    const hipBase = clamp(1.05, (limits.hip?.[0] ?? -1) + 0.04, (limits.hip?.[1] ?? 1) - 0.05);
+    const kneeBase = clamp(1.48, limits.knee?.[0] ?? 0, (limits.knee?.[1] ?? 2) - 0.05);
+    const shBase = clamp(1.05, (limits.shoulder?.[0] ?? -1) + 0.04, (limits.shoulder?.[1] ?? 1) - 0.08);
+    const elBase = clamp(1.2, limits.elbow?.[0] ?? 0, (limits.elbow?.[1] ?? 2) - 0.05);
+    const mix = (stand: number, low: number): number => lerp(stand, low, crawl);
+    const bipedArm = armAmp * (0.55 + 0.9 * armDrive);
+    const elbowPump = elbow * (0.7 + 0.55 * armDrive);
+    const kneeCrouch = fold * 1.05 * ramp * (1 - crawl);
+    const hipCrouch = fold * 0.32 * ramp * (1 - crawl);
+    set("spine", mix(lean * (1 - 0.45 * fold) + fold * 0.05 * ramp, -0.32), "spine");
+    set("neck", lean * 0.15, "spine");
+    set("hipL", mix(left.hip + turn + hipCrouch, hipBase + hipSwing * wave(phaseL) + turn * 0.3), "hip");
+    set("hipR", mix(right.hip - turn + hipCrouch, hipBase + hipSwing * wave(phaseR) - turn * 0.3), "hip");
+    set("kneeL", mix(left.knee + kneeCrouch, kneeBase + kneeSwing * Math.max(0, wave(phaseL))), "knee");
+    set("kneeR", mix(right.knee + kneeCrouch, kneeBase + kneeSwing * Math.max(0, wave(phaseR))), "knee");
+    set("ankleL", mix(toe * Math.sin(armPhase), toe * 0.4 * wave(phaseL)), "ankle");
+    set("ankleR", mix(toe * Math.sin(armPhase + Math.PI * split), toe * 0.4 * wave(phaseR)), "ankle");
+    set("shoulderL", mix(-bipedArm * Math.sin(armPhase), shBase + armSwing * wave(phaseR)), "shoulder");
+    set("shoulderR", mix(-bipedArm * Math.sin(armPhase + Math.PI * split), shBase + armSwing * wave(phaseL)), "shoulder");
+    set("elbowL", mix(elbowPump + 0.18 * armDrive * Math.max(0, Math.sin(armPhase)), elBase + 0.22 * armDrive * Math.max(0, wave(phaseR))), "elbow");
+    set("elbowR", mix(elbowPump + 0.18 * armDrive * Math.max(0, Math.sin(armPhase + Math.PI * split)), elBase + 0.22 * armDrive * Math.max(0, wave(phaseL))), "elbow");
+    return;
+  }
 
-  out.spine = mix(
-    (decoded.lean ?? 0) * (1 - 0.45 * fold) + fold * 0.05 * ramp,
-    -0.32,
-    limits.spine[0],
-    limits.spine[1]
-  );
-  out.hipL = mix(
-    left.hip + turn + hipCrouch,
-    hipBase + hipSwing * wave(phaseL) + turn * 0.3,
-    limits.hip[0],
-    limits.hip[1]
-  );
-  out.hipR = mix(
-    right.hip - turn + hipCrouch,
-    hipBase + hipSwing * wave(phaseR) - turn * 0.3,
-    limits.hip[0],
-    limits.hip[1]
-  );
-  out.kneeL = mix(
-    left.knee + kneeCrouch,
-    kneeBase + kneeSwing * Math.max(0, wave(phaseL)),
-    limits.knee[0],
-    limits.knee[1]
-  );
-  out.kneeR = mix(
-    right.knee + kneeCrouch,
-    kneeBase + kneeSwing * Math.max(0, wave(phaseR)),
-    limits.knee[0],
-    limits.knee[1]
-  );
-  out.ankleL = mix(toe * Math.sin(armPhase), toe * 0.4 * wave(phaseL), limits.ankle[0], limits.ankle[1]);
-  out.ankleR = mix(
-    toe * Math.sin(armPhase + Math.PI * split),
-    toe * 0.4 * wave(phaseR),
-    limits.ankle[0],
-    limits.ankle[1]
-  );
-  // Biped: counter-swing arms. Crawl: arms drive like front legs, scaled by armDrive.
-  out.shoulderL = mix(
-    -bipedArm * Math.sin(armPhase),
-    shBase + armSwing * wave(phaseR),
-    limits.shoulder[0],
-    limits.shoulder[1]
-  );
-  out.shoulderR = mix(
-    -bipedArm * Math.sin(armPhase + Math.PI * split),
-    shBase + armSwing * wave(phaseL),
-    limits.shoulder[0],
-    limits.shoulder[1]
-  );
-  out.elbowL = mix(
-    elbowPump + 0.18 * armDrive * Math.max(0, Math.sin(armPhase)),
-    elBase + 0.22 * armDrive * Math.max(0, wave(phaseR)),
-    limits.elbow[0],
-    limits.elbow[1]
-  );
-  out.elbowR = mix(
-    elbowPump + 0.18 * armDrive * Math.max(0, Math.sin(armPhase + Math.PI * split)),
-    elBase + 0.22 * armDrive * Math.max(0, wave(phaseL)),
-    limits.elbow[0],
-    limits.elbow[1]
-  );
+  if (morph.form === "snake") {
+    const amp = Math.max(0.25, Math.min(1.05, hipAmp * 0.55 + lean * 0.3));
+    let i = 0;
+    for (const joint of morph.joints) {
+      if (!joint.poseKey.startsWith("seg")) continue;
+      const phase = cycle + i * (0.35 + 0.25 * split);
+      set(joint.poseKey, amp * Math.sin(phase * Math.PI * 2) + turn * 0.4, "segment");
+      i += 1;
+    }
+    return;
+  }
+
+  if (morph.form === "blob") {
+    const amp = Math.max(0.2, Math.min(0.95, hipAmp * 0.4 + armAmp * 0.25));
+    let i = 0;
+    for (const joint of morph.joints) {
+      if (!joint.poseKey.startsWith("lobe")) continue;
+      set(joint.poseKey, amp * Math.sin((cycle + i * 0.37) * Math.PI * 2) + lean * 0.2, "segment");
+      i += 1;
+    }
+    return;
+  }
+
+  if (morph.form === "wheeler") {
+    set("spine", lean * 0.35, "spine");
+    const spin = (toe * 2.8 + hipAmp * 1.6 + 1.2) * (0.6 + 0.8 * armDrive);
+    let i = 0;
+    for (const joint of morph.joints) {
+      if (joint.poseKey.startsWith("susp")) {
+        set(joint.poseKey, hipBias * 0.4 + 0.12 * Math.sin((cycle + i * 0.5) * Math.PI * 2), "hip");
+      } else if (joint.poseKey.startsWith("wheel")) {
+        // Continuous roll target wraps inside ±π via motor position.
+        const angle = ((time * spin + i * 0.7) % (Math.PI * 2)) - Math.PI;
+        out[joint.poseKey] = angle;
+      }
+      i += 1;
+    }
+    return;
+  }
+
+  // Quad, spider, centipede: phased multi-leg gait.
+  const hipSwing = Math.max(0.28, Math.min(0.85, hipAmp * 0.5));
+  const kneeSwing = Math.max(0.15, Math.min(0.7, kneeAmp * 0.35));
+  const hipBase = clamp(0.55 + hipBias, (limits.hip?.[0] ?? -1) + 0.05, (limits.hip?.[1] ?? 1) - 0.05);
+  const kneeBase = clamp(0.85 + stance, limits.knee?.[0] ?? 0, (limits.knee?.[1] ?? 2) - 0.05);
+  set("spine", lean * (morph.form === "quad" ? 0.45 : 0.25), "spine");
+
+  const hipKeys = morph.joints.filter((j) => j.poseKey.startsWith("hip")).map((j) => j.poseKey);
+  const n = Math.max(1, hipKeys.length);
+  for (let i = 0; i < hipKeys.length; i++) {
+    const key = hipKeys[i]!;
+    const phaseOff =
+      morph.form === "quad"
+        ? (i % 2 === 0 ? 0 : 0.5 * split)
+        : morph.form === "centipede"
+          ? (Math.floor(i / 2) * 0.18 + (i % 2) * 0.5 * split)
+          : (i / n) * split;
+    const phase = ((cycle + phaseOff) % 1 + 1) % 1;
+    const step = legStep(cycle + phaseOff, hipSwing, hipBias * 0.5, kneeSwing, stance);
+    set(key, hipBase + step.hip * 0.85 + turn * (i % 2 === 0 ? 0.25 : -0.25), "hip");
+    const kneeKey = key.replace("hip", "knee");
+    const ankleKey = key.replace("hip", "ankle");
+    if (out[kneeKey] !== undefined || morph.joints.some((j) => j.poseKey === kneeKey)) {
+      set(kneeKey, kneeBase + step.knee, "knee");
+    }
+    if (morph.joints.some((j) => j.poseKey === ankleKey)) {
+      set(ankleKey, toe * 0.45 * wave(phase), "ankle");
+    }
+  }
+
+  // Centipede body links undulate mildly.
+  if (morph.form === "centipede") {
+    let i = 0;
+    for (const joint of morph.joints) {
+      if (!joint.poseKey.startsWith("link")) continue;
+      set(joint.poseKey, 0.35 * hipAmp * Math.sin((cycle + i * 0.28) * Math.PI * 2) + turn * 0.2, "segment");
+      i += 1;
+    }
+  }
 }

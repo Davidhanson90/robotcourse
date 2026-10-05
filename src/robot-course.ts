@@ -266,7 +266,7 @@ export class RobotCourse extends LitElement {
           <header class="panel">
             <div class="brand">
               <h1><span class="mark" style="--swatch:${swatch}"></span>ROBOT COURSE</h1>
-              <p>Generation 0 seeds different strategies — tall, stocky, striders, crawlers, jumpers, stiff or flexible, arm-driven, lean-heavy. Shape, gait, posture, jump, and arm drive are genes. Flexibility and Jump scale that range and hop. Jump frequency sets how often a grounded robot may take that hop. Distance first, then a finish bonus, then time.</p>
+              <p>Robots are any shape — bipeds, quads, spiders, snakes, blobs, wheeled chassis, centipedes. Topology, size, gait, jump, and drive are genes. Generation 0 seeds those plans. Flexibility and Jump scale range and hop; Jump frequency is how often a grounded contact may hop. Distance first, then finish bonus, then time.</p>
             </div>
             <div class="stats">
               <div class="stat">
@@ -306,7 +306,7 @@ export class RobotCourse extends LitElement {
                 @input=${this.onPop}
               />
             </label>
-            <label class="pop" title="0 is stiff. 100 allows the full hip and knee gene, including crouch and crawl.">
+            <label class="pop" title="0 is stiff. 100 allows the full joint-range genes, including crouch on legged bodies.">
               Flexibility ${this.flexibility}
               <input
                 type="range"
@@ -317,7 +317,7 @@ export class RobotCourse extends LitElement {
                 @input=${this.onFlexibility}
               />
             </label>
-            <label class="pop" title="0 means nobody can jump. 100 is the full jump gene. A foot still has to be on the ground.">
+            <label class="pop" title="0 means nobody can jump. 100 is the full jump gene. A contact (foot, wheel, lobe) still has to be on the ground.">
               Jump ${this.jump}
               <input
                 type="range"
