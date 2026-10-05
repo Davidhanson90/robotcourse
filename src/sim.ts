@@ -451,6 +451,10 @@ export class CourseSim {
     }
   }
 
+  /**
+   * Rank by fitness, breed (elites keep full genomes; children inherit body genes),
+   * then rebuild every robot from its own genome — not a shared morph.
+   */
   nextGeneration(pop = this.pop): void {
     const ranked = [...this.internals].sort(
       (a, b) => b.state.score - a.state.score || b.state.maxTravel - a.state.maxTravel
@@ -506,6 +510,7 @@ export class CourseSim {
     this.scoreAll();
   }
 
+  /** Physics and colliders for one genome. Morph sizes come only from these genes. */
   private spawnRobot(index: number, genes: number[], spawnX: number, spawnZ: number): Robot {
     const decoded = decode(genes);
     const morph = morphFromDecoded(decoded);

@@ -180,6 +180,7 @@ export class CourseView {
     });
   }
 
+  /** One visual per robot, sized from that robot's morph (its genome), never a shared body. */
   private rebuildRobots(sim: CourseSim): void {
     for (const visual of this.robots.values()) {
       for (const obj of Object.values(visual.parts)) {

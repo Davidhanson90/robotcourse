@@ -462,41 +462,79 @@ function tournament(ranked: readonly number[][], rng: Rng): number[] {
   return ranked[best] ?? ranked[0] ?? randomGenome(rng);
 }
 
+/** Body/posture genes. Milder mutation so winners' shapes breed true. */
+const SHAPE_GENES = new Set([
+  "leg",
+  "torsoH",
+  "torsoW",
+  "arm",
+  "hipFlex",
+  "kneeFlex",
+  "jump",
+  "quad",
+  "armDrive"
+]);
+
 function crossover(a: readonly number[], b: readonly number[], rng: Rng): number[] {
   const len = Math.max(a.length, b.length, GENES.length);
   const child: number[] = [];
   for (let i = 0; i < len; i++) {
     const gene = a[i] ?? b[i] ?? 0.5;
     const other = b[i] ?? gene;
+    const name = GENES[i]?.name;
+    const shape = name !== undefined && SHAPE_GENES.has(name);
     const roll = rng();
-    if (roll < 0.45) child.push((gene + other) * 0.5);
-    else if (roll < 0.72) child.push(gene);
-    else child.push(other);
+    // Shape: usually inherit one parent's proportions whole so morphs stay crisp.
+    // Gait: blend more often.
+    if (shape) {
+      if (roll < 0.12) child.push((gene + other) * 0.5);
+      else if (roll < 0.62) child.push(gene);
+      else child.push(other);
+    } else if (roll < 0.45) {
+      child.push((gene + other) * 0.5);
+    } else if (roll < 0.72) {
+      child.push(gene);
+    } else {
+      child.push(other);
+    }
   }
   return child;
 }
 
 function mutate(genes: readonly number[], rng: Rng): number[] {
-  // Enough variance that crawl vs jumper lineages can keep specializing.
+  // Gait stays lively. Shape genes move less so fitness clearly reshapes the lineup.
   return genes.map((gene, i) => {
-    const rate = i < genes.length ? 0.34 : 0.34;
+    const name = GENES[i]?.name;
+    const shape = name !== undefined && SHAPE_GENES.has(name);
+    const rate = shape ? 0.2 : 0.34;
     if (rng() > rate) return gene;
-    // Occasional large leaps; usually moderate noise.
-    const sigma = rng() < 0.18 ? 0.28 : rng() < 0.45 ? 0.12 : 0.055;
+    const sigma = shape
+      ? rng() < 0.12
+        ? 0.14
+        : rng() < 0.4
+          ? 0.07
+          : 0.03
+      : rng() < 0.18
+        ? 0.28
+        : rng() < 0.45
+          ? 0.12
+          : 0.055;
     return clamp01(gene + gauss(rng) * sigma);
   });
 }
 
 /**
  * `parents` must already be sorted best-first. Returns a new population of genomes.
- * Elites are copied in full, including leg, torso, arm, joint-range, and jump genes.
- * Children mix those genes by crossover and mutation. Immigrants reintroduce
- * archetype diversity so the pool does not collapse into one flop.
+ * Elites are copied whole (every body and gait gene). Children blend two parents
+ * then mutate — shape genes softer than gait — so successful morphs visibly take
+ * over. A thin immigrant trickle (at most one) keeps a little diversity without
+ * washing out winners.
  */
 export function breed(parents: readonly number[][], pop: number, rng: Rng): number[][] {
   if (parents.length === 0) return initialPopulation(pop, rng);
-  const eliteN = Math.max(2, Math.round(pop * 0.14));
-  const immigrants = Math.max(2, Math.round(pop * 0.12));
+  const eliteN = Math.max(2, Math.round(pop * 0.2));
+  // One immigrant at most. Success, not random archetypes, drives shape change.
+  const immigrants = pop >= 14 ? 1 : 0;
   const out: number[][] = [];
   for (let i = 0; i < eliteN && i < parents.length; i++) {
     out.push((parents[i] ?? []).slice());
